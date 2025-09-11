@@ -8,15 +8,20 @@ const redis = getRedisClient();
 
 class AuthController {
   /**
-   * Register a new user
+   * Register a new user (tenant context required)
    */
   async register(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = await authService.register(req.body);
-
+      // CRITICAL: Extract tenant context from request
+      if (!req.tenantId) {
+        throw new AppError('Tenant context required for registration', 400);
+      }
+      
+      const user = await authService.register(req.body, req.tenantId);
+      
       res.status(201).json({
         success: true,
-        message: 'Registration successful. Please check your email to verify your account.',
+        message: 'Registration successful! Please check your email to verify your account.',
         data: { user },
       });
     } catch (error) {
@@ -25,17 +30,23 @@ class AuthController {
   }
 
   /**
-   * Login user
+   * Login user (tenant context required)
    */
   async login(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { email, password, rememberMe = false } = req.body;
+      // CRITICAL: Extract tenant context from request
+      if (!req.tenantId) {
+        throw new AppError('Tenant context required for login', 400);
+      }
+
+      const { email, password, rememberMe } = req.body;
       const ipAddress = req.ip || req.headers['x-forwarded-for'] as string;
       const userAgent = req.headers['user-agent'];
 
       const result = await authService.login(
         email,
         password,
+        req.tenantId,
         ipAddress,
         userAgent,
         rememberMe

@@ -57,29 +57,26 @@ export const authValidationSchemas = {
     email: emailSchema.required(),
     password: passwordSchema.required(),
     confirmPassword: Joi.string()
-      .valid(Joi.ref('password'))
       .required()
+      .valid(Joi.ref('password'))
       .messages({
         'any.only': 'Passwords do not match',
-        'string.empty': 'Please confirm your password',
+        'any.required': 'Password confirmation is required',
       }),
     fullName: Joi.string()
       .trim()
       .min(2)
       .max(100)
-      .pattern(/^[a-zA-Z\s'-]+$/)
-      .custom((value) => sanitizeInput(value))
-      .optional()
+      .optional(),
+    // CRITICAL: Remove tenantId and role from public registration
+    // These are now extracted from subdomain/context only
+    acceptTerms: Joi.boolean()
+      .valid(true)
+      .required()
       .messages({
-        'string.min': 'Full name must be at least 2 characters long',
-        'string.max': 'Full name must be less than 100 characters',
-        'string.pattern.base': 'Full name can only contain letters, spaces, hyphens, and apostrophes',
+        'any.only': 'You must accept the terms and conditions',
+        'any.required': 'Terms acceptance is required',
       }),
-    tenantId: tenantIdSchema,
-    role: Joi.string()
-      .valid('SUPER_ADMIN', 'TENANT_ADMIN', 'TENANT_USER', 'END_USER')
-      .optional()
-      .default('TENANT_USER'),
   }),
 
   login: Joi.object({

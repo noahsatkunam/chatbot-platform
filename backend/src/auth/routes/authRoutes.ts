@@ -1,21 +1,19 @@
 import { Router } from 'express';
 import { authController } from '../controllers/authController';
+import { validateRequest } from '../../middlewares/validation.middleware';
+import { authValidationSchemas } from '../validators/authValidators';
 import { 
   authenticate, 
-  optionalAuth, 
+  authorize, 
+  checkEmailVerified,
+  checkTwoFactorEnabled,
   auditLog,
-  secureHeaders,
-  userRateLimit
+  refreshTokenMiddleware
 } from '../middleware/authMiddleware';
-import { 
-  authValidationSchemas, 
-  validateRequest,
-  sanitizeInputMiddleware 
-} from '../validators/authValidators';
-import { csrfProtection } from '../../middlewares/csrf';
+import { sanitizeInputMiddleware } from '../validators/authValidators';
 import rateLimit from 'express-rate-limit';
 import { getRedisClient } from '../../utils/redis';
-import RedisStore from 'rate-limit-redis';
+import { identifyTenant } from '../../tenant/middleware/tenantMiddleware';
 
 const router = Router();
 const redis = getRedisClient();
@@ -102,6 +100,7 @@ router.post(
 router.post(
   '/forgot-password',
   passwordResetRateLimit,
+  identifyTenant,
   validateRequest(authValidationSchemas.forgotPassword),
   auditLog('AUTH_FORGOT_PASSWORD'),
   authController.forgotPassword
@@ -110,6 +109,7 @@ router.post(
 router.post(
   '/reset-password',
   passwordResetRateLimit,
+  identifyTenant,
   validateRequest(authValidationSchemas.resetPassword),
   auditLog('AUTH_RESET_PASSWORD'),
   authController.resetPassword
@@ -126,6 +126,7 @@ router.post(
 router.post(
   '/resend-verification',
   authRateLimit,
+  identifyTenant,
   validateRequest(authValidationSchemas.resendVerificationEmail),
   auditLog('AUTH_RESEND_VERIFICATION'),
   authController.resendVerificationEmail

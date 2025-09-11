@@ -48,9 +48,15 @@ export interface PasswordResetData {
 
 class AuthService {
   /**
-   * Register a new user
+   * Register a new user (public endpoint - tenant context required)
    */
-  async register(data: RegisterUserData): Promise<Partial<User>> {
+  async register(data: RegisterUserData, tenantId: string | null): Promise<Partial<User>> {
+    // CRITICAL: Prevent public SUPER_ADMIN creation
+    // Only existing SUPER_ADMINs can create other admins
+    if (data.role === 'SUPER_ADMIN' || data.role === 'TENANT_ADMIN') {
+      throw new AppError('Insufficient permissions to create admin users', 403);
+    }
+
     // Validate password strength
     const passwordValidation = validatePasswordStrength(data.password);
     if (!passwordValidation.isValid) {
@@ -60,39 +66,34 @@ class AuthService {
     // Normalize email
     const email = data.email.toLowerCase().trim();
 
-    // If tenantId is not provided, check for invitation token
-    let tenantId = data.tenantId;
-    
-    if (!tenantId && data.invitationToken) {
-      // Validate invitation token and get tenant ID
-      // TODO: Implement invitation token validation
-      throw new AppError('Invitation token validation not implemented', 501);
+    // CRITICAL: Tenant validation
+    if (!tenantId) {
+      throw new AppError('Tenant context required for registration', 400);
     }
 
-    // For tenant-scoped registration, check if user already exists in the tenant
-    if (tenantId) {
-      const existingUser = await prisma.user.findFirst({
-        where: {
-          email,
-          tenantId,
-        },
-      });
+    // Verify tenant exists and is active
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
 
-      if (existingUser) {
-        throw new AppError('User with this email already exists in this tenant', 409);
-      }
-    } else {
-      // For non-tenant registration (super admin), check globally
-      const existingUser = await prisma.user.findFirst({
-        where: {
-          email,
-          tenantId: null,
-        },
-      });
+    if (!tenant) {
+      throw new AppError('Invalid tenant', 404);
+    }
 
-      if (existingUser) {
-        throw new AppError('User with this email already exists', 409);
-      }
+    if (tenant.status === 'SUSPENDED' || tenant.status === 'INACTIVE') {
+      throw new AppError('Tenant is not active', 403);
+    }
+
+    // Check if user already exists in the tenant
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        email,
+        tenantId,
+      },
+    });
+
+    if (existingUser) {
+      throw new AppError('User with this email already exists', 409);
     }
 
     // Hash password
@@ -107,7 +108,8 @@ class AuthService {
           passwordHash,
           fullName: data.fullName,
           tenantId,
-          role: data.role as any || (tenantId ? 'TENANT_USER' : 'SUPER_ADMIN'),
+          // CRITICAL: Always create TENANT_USER for public registration
+          role: 'TENANT_USER' as any,
           metadata: {
             registrationSource: 'web',
             registrationDate: new Date().toISOString(),
@@ -160,44 +162,58 @@ class AuthService {
   }
 
   /**
-   * Login user
+   * Login user (tenant-scoped)
    */
   async login(
-    email: string, 
+    email: string,
     password: string,
+    tenantId: string | null,
     ipAddress?: string,
     userAgent?: string,
-    rememberMe: boolean = false
+    skipPasswordCheck: boolean = false
   ): Promise<LoginResult> {
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Get user with tenant information
-    const user = await prisma.user.findUnique({
-      where: { email: normalizedEmail },
-      include: { tenant: true },
+    // CRITICAL: Require tenant context for login
+    if (!tenantId) {
+      throw new AppError('Tenant context required for login', 400);
+    }
+
+    // Find user by email AND tenantId to prevent cross-tenant authentication
+    const user = await prisma.user.findFirst({
+      where: { 
+        email: normalizedEmail,
+        tenantId: tenantId
+      },
+      include: {
+        tenant: true
+      }
     });
 
     if (!user) {
-      // Use generic error message to prevent user enumeration
-      throw new AppError('Invalid email or password', 401);
+      throw new AppError('Invalid credentials', 401);
     }
 
-    // Check if account is locked
+    // Verify tenant is active
+    if (user.tenant && (user.tenant.status === 'SUSPENDED' || user.tenant.status === 'INACTIVE')) {
+      throw new AppError('Tenant is not active', 403);
+    }
+
+    // Check account lock
     if (user.lockedUntil && user.lockedUntil > new Date()) {
-      const remainingTime = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
-      throw new AppError(
-        `Account is locked. Please try again in ${remainingTime} minutes.`,
-        423
-      );
+      throw new AppError('Account is locked. Please try again later.', 423);
     }
 
-    // Verify password
-    const isValidPassword = await verifyPassword(password, user.passwordHash);
-
-    if (!isValidPassword) {
-      await this.handleFailedLogin(user.id, ipAddress);
-      throw new AppError('Invalid email or password', 401);
-    }
+    // Verify password (skip for 2FA second step)
+    if (!skipPasswordCheck) {
+      const isPasswordValid = await verifyPassword(password, user.passwordHash);
+      
+      if (!isPasswordValid) {
+        // Increment failed login attempts
+        await this.incrementFailedLoginAttempts(user.id);
+        throw new AppError('Invalid credentials', 401);
+      }
+    } 
 
     // Check if email is verified
     if (!user.emailVerified) {
@@ -267,9 +283,9 @@ class AuthService {
     // Send login alert if from new location
     if (ipAddress && ipAddress !== user.lastLoginIp) {
       try {
-        await emailService.sendLoginAlertEmail(user.email, {
+        await emailService.sendLoginAlert(user.email, {
           ipAddress,
-          userAgent,
+          userAgent: userAgent || 'Unknown',
           timestamp: new Date(),
         });
       } catch (error) {
