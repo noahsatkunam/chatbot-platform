@@ -282,7 +282,7 @@ export function isValidEmail(email: string): boolean {
 }
 
 // Input sanitization middleware
-export function sanitizeInputMiddleware(req: any, res: any, next: any) {
+export function sanitizeInputMiddleware(req: any, _res: any, next: any) {
   // Sanitize body
   if (req.body) {
     req.body = sanitizeObject(req.body);

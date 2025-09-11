@@ -2,25 +2,31 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { PrismaClient, TokenType } from '@prisma/client';
 import { logger } from '../../utils/logger';
-import { redisClient } from '../../utils/redis';
+import { getRedisClient } from '../../utils/redis';
+
+const redisClient = getRedisClient();
 
 const prisma = new PrismaClient();
 
 // JWT Configuration
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || '';
 const JWT_ACCESS_EXPIRES_IN = process.env.JWT_ACCESS_EXPIRES_IN || '15m';
 const JWT_REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || '30d';
 const JWT_ISSUER = process.env.JWT_ISSUER || 'chatbot-platform';
 const JWT_AUDIENCE = process.env.JWT_AUDIENCE || 'chatbot-platform-api';
 
-// Validate JWT secret
-if (!JWT_SECRET) {
-  throw new Error('JWT_SECRET environment variable is required');
+// Validate JWT secret at runtime
+function validateJwtSecret(): void {
+  if (!JWT_SECRET) {
+    throw new Error('JWT_SECRET environment variable is required');
+  }
+  if (JWT_SECRET.length < 32) {
+    throw new Error('JWT_SECRET must be at least 32 characters long');
+  }
 }
 
-if (JWT_SECRET.length < 32) {
-  throw new Error('JWT_SECRET must be at least 32 characters long');
-}
+// Call validation on first use
+validateJwtSecret();
 
 export interface JWTPayload {
   sub: string; // user id
@@ -104,7 +110,7 @@ export async function generateTokenPair(userId: string, email: string, role: str
   });
   
   // Store session in Redis for quick access
-  await redisClient.setex(
+  await redisClient.setEx(
     `session:${sessionId}`,
     30 * 24 * 60 * 60, // 30 days in seconds
     JSON.stringify({ userId, email, role, tenantId })

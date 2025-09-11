@@ -10,18 +10,15 @@ const prisma = new PrismaClient();
 const redis = getRedisClient();
 
 // Extend Express Request interface
-declare global {
-  namespace Express {
-    interface Request {
-      user?: User;
-      userId?: string;
-      tenantId?: string;
-      token?: string;
-      sessionId?: string;
-      requestId?: string;
-      csrfToken?: string;
-    }
-  }
+// Extend Express Request interface
+export interface AuthRequest extends Request {
+  user?: User;
+  userId?: string;
+  tenantId?: string;
+  token?: string;
+  sessionId?: string;
+  requestId?: string;
+  csrfToken?: () => string;
 }
 
 /**

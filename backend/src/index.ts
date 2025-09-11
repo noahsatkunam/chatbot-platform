@@ -79,7 +79,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(pinoHttp({ logger }));
 
 // Health check
-app.get('/health', async (req, res) => {
+app.get('/health', async (_req, res) => {
   try {
     // Check database connection
     await prisma.$queryRaw`SELECT 1`;

@@ -42,11 +42,12 @@ class AuthController {
       );
 
       if (result.requiresTwoFactor) {
-        return res.status(200).json({
+        res.status(200).json({
           success: true,
           message: 'Two-factor authentication required',
           requiresTwoFactor: true,
         });
+        return;
       }
 
       // Set HTTP-only cookies for tokens
@@ -168,7 +169,7 @@ class AuthController {
   /**
    * Request password reset
    */
-  async forgotPassword(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async forgotPassword(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { email } = req.body;
 
@@ -234,7 +235,7 @@ class AuthController {
   /**
    * Resend verification email
    */
-  async resendVerificationEmail(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async resendVerificationEmail(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { email } = req.body;
 
@@ -316,7 +317,7 @@ class AuthController {
           false
         );
 
-        return res.json({
+        res.json({
           success: true,
           message: 'Two-factor authentication successful',
           data: {
@@ -324,6 +325,7 @@ class AuthController {
             accessToken: tokens.tokens.accessToken,
           },
         });
+        return;
       }
 
       // Otherwise, this is enabling 2FA
@@ -372,7 +374,7 @@ class AuthController {
    */
   async getCsrfToken(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const csrfToken = req.csrfToken?.() || req.session?.csrfToken;
+      const csrfToken = req.csrfToken?.();
       
       if (!csrfToken) {
         throw new AppError('CSRF token not available', 500);

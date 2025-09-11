@@ -7,8 +7,7 @@ import { getRedisClient } from '../../utils/redis';
 import { 
   hashPassword, 
   verifyPassword, 
-  validatePasswordStrength,
-  generateSecurePassword 
+  validatePasswordStrength
 } from '../utils/password';
 import {
   generateTokenPair,
@@ -182,7 +181,7 @@ class AuthService {
     if (user.twoFactorEnabled) {
       // Generate temporary auth token for 2FA flow
       const tempToken = generateSecureToken(32);
-      await redis.setex(
+      await redis.setEx(
         `2fa_temp:${tempToken}`,
         300, // 5 minutes
         JSON.stringify({ userId: user.id, ipAddress, userAgent })
