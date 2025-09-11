@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import authRoutes from '../auth/routes/authRoutes';
-import tenantRoutes from './tenants.routes';
+import tenantRoutes from '../tenant/routes/tenantRoutes';
 import chatbotRoutes from './chatbots.routes';
 import conversationRoutes from './conversations.routes';
 

@@ -27,6 +27,7 @@ export interface RegisterUserData {
   fullName?: string;
   tenantId?: string;
   role?: string;
+  invitationToken?: string;
 }
 
 export interface LoginResult {
@@ -59,13 +60,39 @@ class AuthService {
     // Normalize email
     const email = data.email.toLowerCase().trim();
 
-    // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email },
-    });
+    // If tenantId is not provided, check for invitation token
+    let tenantId = data.tenantId;
+    
+    if (!tenantId && data.invitationToken) {
+      // Validate invitation token and get tenant ID
+      // TODO: Implement invitation token validation
+      throw new AppError('Invitation token validation not implemented', 501);
+    }
 
-    if (existingUser) {
-      throw new AppError('User with this email already exists', 409);
+    // For tenant-scoped registration, check if user already exists in the tenant
+    if (tenantId) {
+      const existingUser = await prisma.user.findFirst({
+        where: {
+          email,
+          tenantId,
+        },
+      });
+
+      if (existingUser) {
+        throw new AppError('User with this email already exists in this tenant', 409);
+      }
+    } else {
+      // For non-tenant registration (super admin), check globally
+      const existingUser = await prisma.user.findFirst({
+        where: {
+          email,
+          tenantId: null,
+        },
+      });
+
+      if (existingUser) {
+        throw new AppError('User with this email already exists', 409);
+      }
     }
 
     // Hash password
@@ -79,8 +106,8 @@ class AuthService {
           email,
           passwordHash,
           fullName: data.fullName,
-          tenantId: data.tenantId,
-          role: data.role as any || 'TENANT_USER',
+          tenantId,
+          role: data.role as any || (tenantId ? 'TENANT_USER' : 'SUPER_ADMIN'),
           metadata: {
             registrationSource: 'web',
             registrationDate: new Date().toISOString(),

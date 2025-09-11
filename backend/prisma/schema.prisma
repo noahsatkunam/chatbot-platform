@@ -10,17 +10,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum UserRole {
+enum Role {
   SUPER_ADMIN
   TENANT_ADMIN
   TENANT_USER
   END_USER
-}
-
-enum TenantStatus {
-  ACTIVE
-  SUSPENDED
-  DELETED
 }
 
 enum TokenType {
@@ -29,52 +23,119 @@ enum TokenType {
   EMAIL_VERIFICATION
 }
 
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum TenantPlan {
+  FREE
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
 model Tenant {
-  id        String       @id @default(uuid())
-  name      String
-  slug      String       @unique
-  status    TenantStatus @default(ACTIVE)
-  settings  Json         @default("{}")
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
-
-  users     User[]
-  chatbots  Chatbot[]
-  auditLogs AuditLog[]
-
+  id                String          @id @default(uuid())
+  name              String
+  slug              String          @unique
+  subdomain         String          @unique
+  customDomain      String?         @unique
+  status            TenantStatus    @default(TRIAL)
+  plan              TenantPlan      @default(FREE)
+  trialEndsAt       DateTime?
+  suspendedAt       DateTime?
+  suspendReason     String?
+  
+  // Branding & Customization
+  logo              String?
+  primaryColor      String          @default("#3B82F6")
+  secondaryColor    String          @default("#10B981")
+  favicon           String?
+  
+  // Settings & Limits
+  settings          Json            @default("{}")
+  features          Json            @default("{}")
+  limits            Json            @default("{}")
+  
+  // Contact Information
+  contactEmail      String?
+  contactPhone      String?
+  billingEmail      String?
+  
+  // Metadata
+  metadata          Json?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  
+  // Relations
+  users             User[]
+  auditLogs         AuditLog[]
+  tenantUsage       TenantUsage[]
+  chatbots          Chatbot[]
+  apiKeys           ApiKey[]
+  
   @@index([slug])
+  @@index([subdomain])
   @@index([status])
+  @@map("tenants")
+}
+
+model TenantUsage {
+  id              String    @id @default(uuid())
+  tenantId        String
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  period          DateTime  @db.Date
+  
+  // Usage Metrics
+  activeUsers     Int       @default(0)
+  apiCalls        Int       @default(0)
+  messagesCount   Int       @default(0)
+  storageUsed     BigInt    @default(0)
+  
+  // Resource Usage
+  cpuMinutes      Int       @default(0)
+  bandwidthBytes  BigInt    @default(0)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@unique([tenantId, period])
+  @@index([tenantId])
+  @@index([period])
+  @@map("tenant_usage")
 }
 
 model User {
-  id                String    @id @default(uuid())
-  tenantId          String?
-  email             String    @unique
-  passwordHash      String
-  role              UserRole  @default(TENANT_USER)
-  fullName          String?
-  avatarUrl         String?
-  emailVerified     Boolean   @default(false)
-  emailVerifiedAt   DateTime?
-  twoFactorEnabled  Boolean   @default(false)
-  twoFactorSecret   String?
-  metadata          Json      @default("{}")
-  lastLoginAt       DateTime?
-  lastLoginIp       String?
-  failedLoginAttempts Int     @default(0)
-  lockedUntil       DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id                  String      @id @default(uuid())
+  email               String      
+  passwordHash        String
+  fullName            String?
+  role                Role        @default(TENANT_USER)
+  emailVerified       Boolean     @default(false)
+  emailVerifiedAt     DateTime?
+  twoFactorEnabled    Boolean     @default(false)
+  twoFactorSecret     String?
+  lockedUntil         DateTime?
+  failedLoginAttempts Int         @default(0)
+  lastLoginAt         DateTime?
+  lastLoginIp         String?
+  tenantId            String?
+  tenant              Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  metadata            Json?
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  
+  authTokens          AuthToken[]
+  auditLogs           AuditLog[]
 
-  tenant            Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  authTokens        AuthToken[]
-  chatbots          Chatbot[]
-  conversations     Conversation[]
-  auditLogs         AuditLog[]
-
+  @@unique([email, tenantId])
   @@index([email])
   @@index([tenantId])
   @@index([role])
+  @@map("users")
 }
 
 model AuthToken {
@@ -169,4 +230,23 @@ model Message {
 
   @@index([conversationId])
   @@index([createdAt])
+}
+
+model ApiKey {
+  id          String    @id @default(uuid())
+  tenantId    String
+  name        String
+  key         String    @unique
+  hashedKey   String    @unique
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  scopes      String[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  @@index([tenantId])
+  @@index([hashedKey])
+  @@map("api_keys")
 }
