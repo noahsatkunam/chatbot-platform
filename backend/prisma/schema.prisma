@@ -1,0 +1,172 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  TENANT_USER
+  END_USER
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum TokenType {
+  REFRESH
+  PASSWORD_RESET
+  EMAIL_VERIFICATION
+}
+
+model Tenant {
+  id        String       @id @default(uuid())
+  name      String
+  slug      String       @unique
+  status    TenantStatus @default(ACTIVE)
+  settings  Json         @default("{}")
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  users     User[]
+  chatbots  Chatbot[]
+  auditLogs AuditLog[]
+
+  @@index([slug])
+  @@index([status])
+}
+
+model User {
+  id                String    @id @default(uuid())
+  tenantId          String?
+  email             String    @unique
+  passwordHash      String
+  role              UserRole  @default(TENANT_USER)
+  fullName          String?
+  avatarUrl         String?
+  emailVerified     Boolean   @default(false)
+  emailVerifiedAt   DateTime?
+  twoFactorEnabled  Boolean   @default(false)
+  twoFactorSecret   String?
+  metadata          Json      @default("{}")
+  lastLoginAt       DateTime?
+  lastLoginIp       String?
+  failedLoginAttempts Int     @default(0)
+  lockedUntil       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  tenant            Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  authTokens        AuthToken[]
+  chatbots          Chatbot[]
+  conversations     Conversation[]
+  auditLogs         AuditLog[]
+
+  @@index([email])
+  @@index([tenantId])
+  @@index([role])
+}
+
+model AuthToken {
+  id          String    @id @default(uuid())
+  userId      String
+  token       String    @unique
+  type        TokenType
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+  ipAddress   String?
+  userAgent   String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@index([type])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  tenantId    String?
+  userId      String?
+  action      String
+  entity      String
+  entityId    String?
+  metadata    Json     @default("{}")
+  ipAddress   String?
+  userAgent   String?
+  timestamp   DateTime @default(now())
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([action])
+  @@index([timestamp])
+}
+
+model Chatbot {
+  id              String   @id @default(uuid())
+  tenantId        String
+  name            String
+  description     String?
+  status          String   @default("active")
+  configuration   Json     @default("{}")
+  promptTemplate  String?
+  welcomeMessage  String?
+  createdById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy     User?          @relation(fields: [createdById], references: [id])
+  conversations Conversation[]
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+model Conversation {
+  id         String    @id @default(uuid())
+  chatbotId  String
+  userId     String?
+  sessionId  String?
+  metadata   Json      @default("{}")
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  endedAt    DateTime?
+
+  chatbot  Chatbot   @relation(fields: [chatbotId], references: [id], onDelete: Cascade)
+  user     User?     @relation(fields: [userId], references: [id])
+  messages Message[]
+
+  @@index([chatbotId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model Message {
+  id             String   @id @default(uuid())
+  conversationId String
+  type           String
+  content        String
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([createdAt])
+}
