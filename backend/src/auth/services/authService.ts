@@ -1,7 +1,6 @@
 import { PrismaClient, User, TokenType } from '@prisma/client';
 import crypto from 'crypto';
 import speakeasy from 'speakeasy';
-import { createClient } from '@supabase/supabase-js';
 import { logger } from '../../utils/logger';
 import { AppError } from '../../middlewares/errorHandler';
 import { getRedisClient } from '../../utils/redis';
@@ -22,11 +21,6 @@ import { emailService } from '../../services/email.service';
 
 const prisma = new PrismaClient();
 const redis = getRedisClient();
-
-// Initialize Supabase client
-const supabaseUrl = process.env.SUPABASE_URL || '';
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 export interface RegisterUserData {
   email: string;

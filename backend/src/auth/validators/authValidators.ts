@@ -233,16 +233,6 @@ export function validateRequest(schema: Joi.ObjectSchema) {
   };
 }
 
-// SQL injection prevention helper
-export function sanitizeSQLInput(input: string): string {
-  // Remove or escape potentially dangerous SQL characters
-  return input
-    .replace(/[';\\]/g, '')
-    .replace(/--/g, '')
-    .replace(/\/\*/g, '')
-    .replace(/\*\//g, '')
-    .trim();
-}
 
 // XSS prevention helper for output
 export function sanitizeOutput(data: any): any {

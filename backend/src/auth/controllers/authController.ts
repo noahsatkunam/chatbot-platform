@@ -76,8 +76,6 @@ class AuthController {
         message: 'Login successful',
         data: {
           user: result.user,
-          accessToken: result.tokens.accessToken,
-          expiresIn: accessTokenMaxAge / 1000,
         },
       });
     } catch (error) {
@@ -141,10 +139,6 @@ class AuthController {
       res.json({
         success: true,
         message: 'Token refreshed successfully',
-        data: {
-          accessToken: tokens.accessToken,
-          expiresIn: 15 * 60,
-        },
       });
     } catch (error) {
       next(error);

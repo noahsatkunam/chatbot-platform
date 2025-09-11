@@ -7,14 +7,18 @@ import { redisClient } from '../../utils/redis';
 const prisma = new PrismaClient();
 
 // JWT Configuration
-const JWT_SECRET = process.env.JWT_SECRET || '';
+const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_ACCESS_EXPIRES_IN = process.env.JWT_ACCESS_EXPIRES_IN || '15m';
 const JWT_REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || '30d';
 const JWT_ISSUER = process.env.JWT_ISSUER || 'chatbot-platform';
 const JWT_AUDIENCE = process.env.JWT_AUDIENCE || 'chatbot-platform-api';
 
 // Validate JWT secret
-if (!JWT_SECRET || JWT_SECRET.length < 32) {
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET environment variable is required');
+}
+
+if (JWT_SECRET.length < 32) {
   throw new Error('JWT_SECRET must be at least 32 characters long');
 }
 
