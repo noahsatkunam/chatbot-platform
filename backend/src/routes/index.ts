@@ -1,12 +1,17 @@
 import { Router } from 'express';
-import authRoutes from './auth.routes';
-import tenantRoutes from './tenant.routes';
-import chatbotRoutes from './chatbot.routes';
-import conversationRoutes from './conversation.routes';
+import authRoutes from '../auth/routes/authRoutes';
+import tenantRoutes from './tenants.routes';
+import chatbotRoutes from './chatbots.routes';
+import conversationRoutes from './conversations.routes';
 
 const router = Router();
 
-// API routes
+// Health check
+router.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// API Routes
 router.use('/auth', authRoutes);
 router.use('/tenants', tenantRoutes);
 router.use('/chatbots', chatbotRoutes);

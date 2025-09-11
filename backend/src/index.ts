@@ -9,6 +9,8 @@ import { rateLimiter } from './middlewares/rateLimiter';
 import { securityHeaders } from './middlewares/security';
 import { logger } from './utils/logger';
 import { PrismaClient } from '@prisma/client';
+import { initializeRedis } from './utils/redis';
+import { startCSRFCleanup } from './middlewares/csrf';
 import routes from './routes';
 
 // Load environment variables
@@ -122,7 +124,24 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-// Start server
-app.listen(PORT, () => {
-  logger.info(`Server is running on port ${PORT} in ${process.env.NODE_ENV} mode`);
-});
+// Initialize services
+async function startServer() {
+  try {
+    // Initialize Redis
+    await initializeRedis();
+    logger.info('Redis initialized');
+
+    // Start CSRF token cleanup
+    startCSRFCleanup();
+
+    // Start server
+    app.listen(PORT, () => {
+      logger.info(`Server is running on port ${PORT} in ${process.env.NODE_ENV} mode`);
+    });
+  } catch (error) {
+    logger.error('Failed to start server', { error });
+    process.exit(1);
+  }
+}
+
+startServer();
