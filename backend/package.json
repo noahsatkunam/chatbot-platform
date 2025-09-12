@@ -46,7 +46,12 @@
     "zod": "^3.22.4",
     "openai": "^4.20.1",
     "@anthropic-ai/sdk": "^0.9.1",
-    "tiktoken": "^1.0.10"
+    "tiktoken": "^1.0.10",
+    "sharp": "^0.32.6",
+    "file-type": "^18.5.0",
+    "mime-types": "^2.1.35",
+    "archiver": "^6.0.1",
+    "node-clamav": "^0.8.5"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
@@ -75,7 +80,10 @@
     "tsx": "^4.7.0",
     "typescript": "^5.3.3",
     "@types/compression": "^1.7.5",
-    "@types/multer": "^1.4.11"
+    "@types/multer": "^1.4.11",
+    "@types/sharp": "^0.32.0",
+    "@types/mime-types": "^2.1.4",
+    "@types/archiver": "^6.0.4"
   },
   "engines": {
     "node": ">=18.0.0"

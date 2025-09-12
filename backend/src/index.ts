@@ -124,10 +124,16 @@ app.get('/health', async (_req, res) => {
 
 // API routes
 app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
 app.use('/api/tenants', tenantRoutes);
+app.use('/api/chatbots', chatbotRoutes);
+app.use('/api/api-keys', apiKeyRoutes);
+app.use('/api/audit', auditRoutes);
 app.use('/api/chat', chatRoutes);
-app.use('/api/ai', require('./ai/routes/aiRoutes').default);
-app.use('/api/chatbots', chatbotsRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/files', require('./files/routes/fileRoutes').default);
+app.use('/api/search', require('./search/routes/searchRoutes').default);
+app.use('/api/messages', require('./chat/routes/advancedMessageRoutes').default);
 app.use('/api/conversations', conversationsRoutes);
 
 // 404 handler

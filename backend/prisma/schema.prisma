@@ -77,10 +77,16 @@ model Tenant {
   chatbots          Chatbot[]
   apiKeys           ApiKey[]
   conversations     Conversation[]
+  readReceipts      MessageReadReceipt[]
   presence          UserPresence[]
-  aiConfigurations  AIConfiguration[]
-  providerCredentials ProviderCredentials[]
+  aiConfiguration   AIConfiguration?
   tokenUsage        TokenUsage[]
+  uploadedFiles     File[]
+  messageReactions  MessageReaction[]
+  messageReplies    MessageReply[]
+  searchIndexes     SearchIndex[]
+  conversationSettings ConversationSettings[]
+  providerCredentials ProviderCredentials[]
   
   @@index([slug])
   @@index([subdomain])
@@ -225,9 +231,11 @@ model Conversation {
   
   // Relations
   tenant       Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  messages     Message[]
   participants ConversationParticipant[]
-  readReceipts MessageReadReceipt[]
+  messages     Message[]
+  files        File[]
+  searchIndexes SearchIndex[]
+  settings     ConversationSettings?
   
   @@index([tenantId])
   @@index([status])
@@ -278,8 +286,11 @@ model Message {
   user         User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
   chatbot      Chatbot?              @relation(fields: [chatbotId], references: [id], onDelete: SetNull)
   attachments  MessageAttachment[]
-  reactions    MessageReaction[]
   readReceipts MessageReadReceipt[]
+  reactions    MessageReaction[]
+  parentReplies MessageReply[] @relation("ParentMessage")
+  childReplies MessageReply[] @relation("ReplyMessage")
+  searchIndex SearchIndex?
   
   @@index([conversationId])
   @@index([tenantId])
@@ -425,6 +436,111 @@ model TokenUsage {
   @@index([timestamp])
   @@index([tenantId, timestamp])
   @@map("token_usage")
+}
+
+// File Upload Models
+model File {
+  id             String   @id @default(cuid())
+  tenantId       String
+  conversationId String?
+  uploadedBy     String
+  filename       String
+  originalName   String
+  mimetype       String
+  size           Int
+  path           String
+  url            String?
+  thumbnailUrl   String?
+  metadata       Json?
+  virusScanned   Boolean  @default(false)
+  scanResult     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  uploader     User          @relation(fields: [uploadedBy], references: [id], onDelete: Cascade)
+  attachments  MessageAttachment[]
+
+  @@index([tenantId])
+  @@index([conversationId])
+  @@index([uploadedBy])
+  @@index([createdAt])
+  @@map("files")
+}
+
+model MessageReaction {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  tenantId  String
+  reaction  String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, reaction])
+  @@index([messageId])
+  @@index([userId])
+  @@index([tenantId])
+  @@map("message_reactions")
+}
+
+model MessageReply {
+  id              String   @id @default(cuid())
+  parentMessageId String
+  replyMessageId  String
+  tenantId        String
+  createdAt       DateTime @default(now())
+
+  parentMessage Message @relation("ParentMessage", fields: [parentMessageId], references: [id], onDelete: Cascade)
+  replyMessage  Message @relation("ReplyMessage", fields: [replyMessageId], references: [id], onDelete: Cascade)
+  tenant        Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([parentMessageId, replyMessageId])
+  @@index([parentMessageId])
+  @@index([replyMessageId])
+  @@index([tenantId])
+  @@map("message_replies")
+}
+
+model SearchIndex {
+  id             String   @id @default(cuid())
+  tenantId       String
+  conversationId String
+  messageId      String
+  content        String   @db.Text
+  searchVector   String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId])
+  @@index([tenantId])
+  @@index([conversationId])
+  @@index([tenantId, conversationId])
+  @@map("search_indexes")
+}
+
+model ConversationSettings {
+  id             String   @id @default(cuid())
+  conversationId String   @unique
+  tenantId       String
+  settings       Json
+  permissions    Json
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("conversation_settings")
 }
 
 // Enums for chat system
