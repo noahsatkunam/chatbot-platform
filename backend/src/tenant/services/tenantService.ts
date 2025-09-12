@@ -24,14 +24,6 @@ function validateSlug(slug: string): boolean {
   return slugRegex.test(slug) && slug.length >= 3 && slug.length <= 50;
 }
 
-function generateSlug(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .trim();
-}
 
 export class TenantService {
   /**
@@ -57,7 +49,7 @@ export class TenantService {
         data: {
           name: data.name,
           slug: data.slug,
-          status: data.status || TenantStatus.TRIAL,
+          status: data.status || TenantStatus.ACTIVE,
           settings: data.settings || {}
         }
       });
@@ -226,20 +218,18 @@ export class TenantService {
     inactive: number;
   }> {
     try {
-      const [total, active, trial, suspended, inactive] = await Promise.all([
+      const [total, active, suspended] = await Promise.all([
         prisma.tenant.count(),
         prisma.tenant.count({ where: { status: TenantStatus.ACTIVE } }),
-        prisma.tenant.count({ where: { status: TenantStatus.TRIAL } }),
-        prisma.tenant.count({ where: { status: TenantStatus.SUSPENDED } }),
-        prisma.tenant.count({ where: { status: TenantStatus.INACTIVE } })
+        prisma.tenant.count({ where: { status: TenantStatus.SUSPENDED } })
       ]);
 
       return {
         total,
         active,
-        trial,
+        trial: 0, // Not available in current schema
         suspended,
-        inactive
+        inactive: 0 // Not available in current schema
       };
     } catch (error) {
       throw new AppError('Failed to get tenant statistics', 500);
