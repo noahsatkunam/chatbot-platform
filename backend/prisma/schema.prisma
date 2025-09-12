@@ -109,27 +109,34 @@ model TenantUsage {
 }
 
 model User {
-  id                  String      @id @default(uuid())
-  email               String      
-  passwordHash        String
-  fullName            String?
-  role                Role        @default(TENANT_USER)
-  emailVerified       Boolean     @default(false)
-  emailVerifiedAt     DateTime?
-  twoFactorEnabled    Boolean     @default(false)
-  twoFactorSecret     String?
-  lockedUntil         DateTime?
-  failedLoginAttempts Int         @default(0)
-  lastLoginAt         DateTime?
-  lastLoginIp         String?
-  tenantId            String?
-  tenant              Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  metadata            Json?
-  createdAt           DateTime    @default(now())
-  updatedAt           DateTime    @updatedAt
-  
-  authTokens          AuthToken[]
-  auditLogs           AuditLog[]
+  id                    String    @id @default(uuid())
+  email                 String
+  passwordHash          String?
+  fullName              String?
+  avatarUrl             String?
+  role                  Role      @default(TENANT_USER)
+  emailVerified         Boolean   @default(false)
+  emailVerifiedAt       DateTime?
+  twoFactorEnabled      Boolean   @default(false)
+  twoFactorSecret       String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  lastLoginAt           DateTime?
+  lastLoginIp           String?
+  lockedUntil           DateTime?
+  failedLoginAttempts   Int       @default(0)
+  tenantId              String?
+
+  // Relations
+  tenant                Tenant?                   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  auditLogs             AuditLog[]
+  authTokens            AuthToken[]
+  chatbots              Chatbot[]
+  participations        ConversationParticipant[]
+  messages              Message[]
+  messageReactions      MessageReaction[]
+  messageReadReceipts   MessageReadReceipt[]
+  presence              UserPresence?
 
   @@unique([email, tenantId])
   @@index([email])
@@ -199,37 +206,184 @@ model Chatbot {
   @@index([status])
 }
 
+// Enhanced Conversation model for real-time chat
 model Conversation {
-  id         String    @id @default(uuid())
-  chatbotId  String
-  userId     String?
-  sessionId  String?
-  metadata   Json      @default("{}")
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  endedAt    DateTime?
+  id            String             @id @default(uuid())
+  tenantId      String
+  status        ConversationStatus @default(ACTIVE)
+  type          ConversationType   @default(SUPPORT)
+  metadata      Json               @default("{}")
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  lastMessageAt DateTime?
+  
+  // Relations
+  tenant       Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  messages     Message[]
+  participants ConversationParticipant[]
+  readReceipts MessageReadReceipt[]
+  
+  @@index([tenantId])
+  @@index([status])
+  @@index([lastMessageAt])
+  @@map("conversations")
+}
 
-  chatbot  Chatbot   @relation(fields: [chatbotId], references: [id], onDelete: Cascade)
-  user     User?     @relation(fields: [userId], references: [id])
-  messages Message[]
-
-  @@index([chatbotId])
+model ConversationParticipant {
+  id             String          @id @default(uuid())
+  conversationId String
+  userId         String?
+  chatbotId      String?
+  role           ParticipantRole @default(MEMBER)
+  joinedAt       DateTime        @default(now())
+  leftAt         DateTime?
+  
+  // Relations
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  chatbot      Chatbot?     @relation(fields: [chatbotId], references: [id], onDelete: SetNull)
+  
+  @@unique([conversationId, userId])
+  @@unique([conversationId, chatbotId])
+  @@index([conversationId])
   @@index([userId])
-  @@index([createdAt])
+  @@map("conversation_participants")
 }
 
 model Message {
-  id             String   @id @default(uuid())
+  id             String      @id @default(uuid())
   conversationId String
-  type           String
-  content        String
-  metadata       Json     @default("{}")
-  createdAt      DateTime @default(now())
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-
+  content        String      @db.Text
+  type           MessageType @default(TEXT)
+  metadata       Json        @default("{}")
+  edited         Boolean     @default(false)
+  editedAt       DateTime?
+  deleted        Boolean     @default(false)
+  deletedAt      DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  tenantId       String
+  userId         String?
+  chatbotId      String?
+  
+  // Relations
+  tenant       Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  chatbot      Chatbot?              @relation(fields: [chatbotId], references: [id], onDelete: SetNull)
+  attachments  MessageAttachment[]
+  reactions    MessageReaction[]
+  readReceipts MessageReadReceipt[]
+  
   @@index([conversationId])
+  @@index([tenantId])
+  @@index([userId])
   @@index([createdAt])
+  @@map("messages")
+}
+
+model MessageAttachment {
+  id        String   @id @default(uuid())
+  messageId String
+  filename  String
+  fileSize  Int
+  mimeType  String
+  url       String
+  metadata  Json?
+  createdAt DateTime @default(now())
+  
+  // Relations
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  
+  @@index([messageId])
+  @@map("message_attachments")
+}
+
+model MessageReaction {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+  
+  // Relations
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@map("message_reactions")
+}
+
+model MessageReadReceipt {
+  id             String   @id @default(uuid())
+  messageId      String
+  conversationId String
+  userId         String
+  readAt         DateTime @default(now())
+  
+  // Relations
+  message      Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([messageId, userId])
+  @@index([conversationId, userId])
+  @@map("message_read_receipts")
+}
+
+model UserPresence {
+  id         String         @id @default(uuid())
+  userId     String         @unique
+  tenantId   String
+  status     PresenceStatus @default(OFFLINE)
+  lastSeenAt DateTime       @default(now())
+  metadata   Json?
+  
+  // Relations
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  @@index([tenantId])
+  @@index([status])
+  @@map("user_presence")
+}
+
+// Enums for chat system
+enum ConversationStatus {
+  ACTIVE
+  CLOSED
+  ARCHIVED
+}
+
+enum ConversationType {
+  SUPPORT
+  CHAT
+  GROUP
+  CHANNEL
+}
+
+enum ParticipantRole {
+  OWNER
+  ADMIN
+  MEMBER
+  GUEST
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+  VIDEO
+  AUDIO
+  SYSTEM
+}
+
+enum PresenceStatus {
+  ONLINE
+  AWAY
+  BUSY
+  OFFLINE
 }
 
 model ApiKey {

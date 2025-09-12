@@ -1,8 +1,29 @@
 import { Request, Response, NextFunction } from 'express';
+import { Schema } from 'joi';
 import { body, param, query, validationResult } from 'express-validator';
 import validator from 'validator';
 import xss from 'xss';
 import { AppError } from './errorHandler';
+
+/**
+ * Joi validation middleware
+ */
+export const validateRequest = (schema: Schema, property: 'body' | 'query' | 'params' = 'body') => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const { error } = schema.validate(req[property], { abortEarly: false });
+    
+    if (error) {
+      const errors = error.details.map(detail => ({
+        field: detail.path.join('.'),
+        message: detail.message
+      }));
+      
+      return next(new AppError('Validation failed', 400, { errors }));
+    }
+    
+    next();
+  };
+};
 
 /**
  * Handle validation errors
@@ -11,16 +32,18 @@ export const handleValidationErrors = (
   req: Request,
   res: Response,
   next: NextFunction
-): void => {
+) => {
   const errors = validationResult(req);
   
   if (!errors.isEmpty()) {
     const formattedErrors = errors.array().map((error) => ({
-      field: error.type === 'field' ? error.path : error.type,
+      field: error.param,
       message: error.msg,
     }));
     
-    throw new AppError('Validation failed', 400, { errors: formattedErrors });
+    throw new AppError('Validation failed', 400, {
+      errors: formattedErrors,
+    });
   }
   
   next();

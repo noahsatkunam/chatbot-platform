@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import { pinoHttp } from 'pino-http';
@@ -11,7 +12,15 @@ import { logger } from './utils/logger';
 import { PrismaClient } from '@prisma/client';
 import { initializeRedis } from './utils/redis';
 import { startCSRFCleanup } from './middlewares/csrf';
-import routes from './routes';
+import { createServer } from 'http';
+import { WebSocketServer } from './websocket/websocketServer';
+import path from 'path';
+import authRoutes from './auth/routes/authRoutes';
+import tenantRoutes from './tenant/routes/tenantRoutes';
+import chatRoutes from './chat/routes/chatRoutes';
+import chatbotsRoutes from './routes/chatbots.routes';
+import conversationsRoutes from './routes/conversations.routes';
+import { config } from './config';
 
 // Load environment variables
 dotenv.config();
@@ -20,6 +29,11 @@ dotenv.config();
 const prisma = new PrismaClient();
 
 const app = express();
+const httpServer = createServer(app);
+
+// Initialize WebSocket server
+const wsServer = new WebSocketServer(httpServer);
+
 const PORT = process.env.PORT || 5000;
 
 // Security middlewares
@@ -30,7 +44,7 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
       imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'"],
+      connectSrc: ["'self'", "ws:", "wss:"],
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
@@ -75,6 +89,12 @@ app.use('/api/', rateLimiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Compression middleware
+app.use(compression());
+
+// Static files for uploads
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+
 // Logging
 app.use(pinoHttp({ logger }));
 
@@ -87,18 +107,27 @@ app.get('/health', async (_req, res) => {
       status: 'ok', 
       timestamp: new Date().toISOString(),
       environment: process.env.NODE_ENV,
+      services: {
+        api: 'healthy',
+        websocket: 'healthy',
+        database: 'healthy',
+      }
     });
   } catch (error) {
     res.status(503).json({ 
       status: 'error', 
       timestamp: new Date().toISOString(),
-      message: 'Database connection failed',
+      message: 'Service unavailable',
     });
   }
 });
 
 // API routes
-app.use('/api', routes);
+app.use('/api/auth', authRoutes);
+app.use('/api/tenants', tenantRoutes);
+app.use('/api/chat', chatRoutes);
+app.use('/api/chatbots', chatbotsRoutes);
+app.use('/api/conversations', conversationsRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -114,14 +143,22 @@ app.use(errorHandler);
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received, shutting down gracefully');
-  await prisma.$disconnect();
-  process.exit(0);
+  httpServer.close(() => {
+    logger.info('HTTP server closed');
+    wsServer.stop();
+    prisma.$disconnect();
+    process.exit(0);
+  });
 });
 
 process.on('SIGINT', async () => {
   logger.info('SIGINT received, shutting down gracefully');
-  await prisma.$disconnect();
-  process.exit(0);
+  httpServer.close(() => {
+    logger.info('HTTP server closed');
+    wsServer.stop();
+    prisma.$disconnect();
+    process.exit(0);
+  });
 });
 
 // Initialize services
