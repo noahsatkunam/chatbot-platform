@@ -16,11 +16,14 @@ import { createServer } from 'http';
 import { WebSocketServer } from './websocket/websocketServer';
 import path from 'path';
 import authRoutes from './auth/routes/authRoutes';
-import tenantRoutes from './tenant/routes/tenantRoutes';
 import chatRoutes from './chat/routes/chatRoutes';
-import chatbotsRoutes from './routes/chatbots.routes';
 import conversationsRoutes from './routes/conversations.routes';
-import { config } from './config';
+import aiRoutes from './ai/routes/aiRoutes';
+import fileRoutes from './files/routes/fileRoutes';
+import searchRoutes from './search/routes/searchRoutes';
+import advancedMessageRoutes from './chat/routes/advancedMessageRoutes';
+import knowledgeRoutes from './knowledge/routes/knowledgeRoutes';
+import ragRoutes from './knowledge/routes/ragRoutes';
 
 // Load environment variables
 dotenv.config();
@@ -122,18 +125,16 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-// API routes
+// Register routes
 app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/tenants', tenantRoutes);
-app.use('/api/chatbots', chatbotRoutes);
-app.use('/api/api-keys', apiKeyRoutes);
-app.use('/api/audit', auditRoutes);
 app.use('/api/chat', chatRoutes);
+// WebSocket routes are handled by the WebSocket server, not Express routes
 app.use('/api/ai', aiRoutes);
-app.use('/api/files', require('./files/routes/fileRoutes').default);
-app.use('/api/search', require('./search/routes/searchRoutes').default);
-app.use('/api/messages', require('./chat/routes/advancedMessageRoutes').default);
+app.use('/api/files', fileRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/api/messages', advancedMessageRoutes);
+app.use('/api/knowledge', knowledgeRoutes);
+app.use('/api/rag', ragRoutes);
 app.use('/api/conversations', conversationsRoutes);
 
 // 404 handler

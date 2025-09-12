@@ -1,3 +1,4 @@
+// Backup of current schema before fixing
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
@@ -55,8 +56,32 @@ model Tenant {
   id                String          @id @default(uuid())
   name              String
   slug              String          @unique
+  subdomain         String          @unique
+  customDomain      String?         @unique
   status            TenantStatus    @default(TRIAL)
+  plan              TenantPlan      @default(FREE)
+  trialEndsAt       DateTime?
+  suspendedAt       DateTime?
+  suspendReason     String?
+  
+  // Branding & Customization
+  logo              String?
+  primaryColor      String          @default("#3B82F6")
+  secondaryColor    String          @default("#10B981")
+  favicon           String?
+  
+  // Settings & Limits
   settings          Json            @default("{}")
+  features          Json            @default("{}")
+  limits            Json            @default("{}")
+  
+  // Contact Information
+  contactEmail      String?
+  contactPhone      String?
+  billingEmail      String?
+  
+  // Metadata
+  metadata          Json?
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
   
@@ -64,10 +89,9 @@ model Tenant {
   users             User[]
   knowledgeDocuments KnowledgeDocument[]
   knowledgeCollection KnowledgeCollection?
-  retrievalLogs     RetrievalLog[]
-  conversations     Conversation[]
   
   @@index([slug])
+  @@index([subdomain])
   @@index([status])
   @@map("tenants")
 }
@@ -78,12 +102,14 @@ model User {
   password              String
   firstName             String?
   lastName              String?
-  fullName              String?
   avatar                String?
-  avatarUrl             String?
   role                  Role      @default(END_USER)
   isActive              Boolean   @default(true)
   emailVerified         Boolean   @default(false)
+  emailVerifiedAt       DateTime?
+  twoFactorEnabled      Boolean   @default(false)
+  twoFactorSecret       String?
+  lastLoginAt           DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
   tenantId              String?
@@ -91,10 +117,6 @@ model User {
   // Relations
   tenant                Tenant?                   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
   knowledgeDocuments    KnowledgeDocument[]
-  retrievalLogs         RetrievalLog[]
-  participations        ConversationParticipant[]
-  messages              Message[]
-  reactions             MessageReaction[]
 
   @@unique([email, tenantId])
   @@index([email])
@@ -185,103 +207,4 @@ model EmbeddingCache {
   @@index([model])
   @@index([lastUsedAt])
   @@map("embedding_cache")
-}
-
-model RetrievalLog {
-  id            String   @id @default(cuid())
-  tenantId      String
-  userId        String?
-  query         String   @db.Text
-  queryType     String   @default("semantic")
-  resultsCount  Int
-  responseTime  Int      // milliseconds
-  metadata      Json?
-  createdAt     DateTime @default(now())
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
-
-  @@index([tenantId])
-  @@index([userId])
-  @@index([queryType])
-  @@index([createdAt])
-  @@map("retrieval_logs")
-}
-
-// Core Chat Models
-model Conversation {
-  id          String   @id @default(cuid())
-  tenantId    String
-  title       String?
-  isGroup     Boolean  @default(false)
-  metadata    Json?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  tenant       Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  messages     Message[]
-  participants ConversationParticipant[]
-
-  @@index([tenantId])
-  @@index([createdAt])
-  @@map("conversations")
-}
-
-model ConversationParticipant {
-  id             String   @id @default(cuid())
-  conversationId String
-  userId         String
-  tenantId       String
-  role           String   @default("member")
-  joinedAt       DateTime @default(now())
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([conversationId, userId])
-  @@index([conversationId])
-  @@index([userId])
-  @@index([tenantId])
-  @@map("conversation_participants")
-}
-
-model Message {
-  id             String   @id @default(cuid())
-  conversationId String
-  userId         String
-  tenantId       String
-  content        String   @db.Text
-  type           String   @default("text")
-  metadata       Json?
-  deleted        Boolean  @default(false)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  reactions    MessageReaction[]
-
-  @@index([conversationId])
-  @@index([userId])
-  @@index([tenantId])
-  @@index([createdAt])
-  @@map("messages")
-}
-
-model MessageReaction {
-  id        String   @id @default(cuid())
-  messageId String
-  userId    String
-  tenantId  String
-  reaction  String
-  createdAt DateTime @default(now())
-
-  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([messageId, userId, reaction])
-  @@index([messageId])
-  @@index([userId])
-  @@index([tenantId])
-  @@map("message_reactions")
 }
