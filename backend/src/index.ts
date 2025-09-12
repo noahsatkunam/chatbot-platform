@@ -126,6 +126,7 @@ app.get('/health', async (_req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/ai', require('./ai/routes/aiRoutes').default);
 app.use('/api/chatbots', chatbotsRoutes);
 app.use('/api/conversations', conversationsRoutes);
 

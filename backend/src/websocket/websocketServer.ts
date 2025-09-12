@@ -8,6 +8,7 @@ import { MessageQueue } from './managers/messageQueue';
 import { MessageHandler } from './handlers/messageHandler';
 import { TypingHandler } from './handlers/typingHandler';
 import { PresenceHandler } from './handlers/presenceHandler';
+import { AIHandler } from './handlers/aiHandler';
 import { logger } from '../utils/logger';
 import { rateLimitMiddleware } from './middleware/rateLimitMiddleware';
 

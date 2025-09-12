@@ -76,6 +76,11 @@ model Tenant {
   tenantUsage       TenantUsage[]
   chatbots          Chatbot[]
   apiKeys           ApiKey[]
+  conversations     Conversation[]
+  presence          UserPresence[]
+  aiConfigurations  AIConfiguration[]
+  providerCredentials ProviderCredentials[]
+  tokenUsage        TokenUsage[]
   
   @@index([slug])
   @@index([subdomain])
@@ -133,10 +138,11 @@ model User {
   authTokens            AuthToken[]
   chatbots              Chatbot[]
   participations        ConversationParticipant[]
-  messages              Message[]
-  messageReactions      MessageReaction[]
-  messageReadReceipts   MessageReadReceipt[]
+  conversations         ConversationParticipant[]
+  reactions             MessageReaction[]
+  readReceipts          MessageReadReceipt[]
   presence              UserPresence?
+  tokenUsage            TokenUsage[]
 
   @@unique([email, tenantId])
   @@index([email])
@@ -333,20 +339,92 @@ model MessageReadReceipt {
 }
 
 model UserPresence {
-  id         String         @id @default(uuid())
-  userId     String         @unique
+  id         String         @id
+  userId     String        @id
   tenantId   String
   status     PresenceStatus @default(OFFLINE)
-  lastSeenAt DateTime       @default(now())
+  lastSeenAt DateTime      @default(now())
   metadata   Json?
-  
-  // Relations
+
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  
+
   @@index([tenantId])
-  @@index([status])
+  @@index([lastSeenAt])
   @@map("user_presence")
+}
+
+// AI Configuration Models
+model AIConfiguration {
+  id                String   @id @default(cuid())
+  tenantId          String
+  model             String
+  provider          String
+  systemPrompt      String   @db.Text
+  temperature       Float    @default(0.7)
+  maxTokens         Int      @default(4096)
+  topP              Float    @default(1.0)
+  frequencyPenalty  Float    @default(0.0)
+  presencePenalty   Float    @default(0.0)
+  stopSequences     Json     @default("[]")
+  responseFormat    String   @default("text")
+  safetySettings    Json
+  rateLimits        Json
+  fallbackModel     String?
+  customInstructions String? @db.Text
+  knowledgeBase     Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId])
+  @@index([tenantId])
+  @@map("ai_configurations")
+}
+
+model ProviderCredentials {
+  id             String   @id @default(cuid())
+  tenantId       String
+  provider       String
+  apiKey         String
+  organizationId String?
+  baseUrl        String?
+  encrypted      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, provider])
+  @@index([tenantId])
+  @@map("provider_credentials")
+}
+
+model TokenUsage {
+  id               String   @id @default(cuid())
+  tenantId         String
+  userId           String?
+  conversationId   String?
+  model            String
+  provider         String
+  promptTokens     Int
+  completionTokens Int
+  totalTokens      Int
+  cost             Float
+  timestamp        DateTime @default(now())
+  metadata         Json?
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([conversationId])
+  @@index([timestamp])
+  @@index([tenantId, timestamp])
+  @@map("token_usage")
 }
 
 // Enums for chat system
