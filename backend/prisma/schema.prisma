@@ -69,6 +69,9 @@ model Tenant {
   processingJobs    ProcessingJob[]
   searchAnalytics   SearchAnalytics[]
   kbSettings        KnowledgeBaseSettings?
+  ragQueries        RagQuery[]
+  knowledgeFeedback KnowledgeFeedback[]
+  retrievalAnalytics RetrievalAnalytics[]
   
   @@index([slug])
   @@index([status])
@@ -101,6 +104,8 @@ model User {
   processingJobs        ProcessingJob[]
   searchAnalytics       SearchAnalytics[]
   documentVersions      DocumentVersion[]
+  ragQueries            RagQuery[]
+  knowledgeFeedback     KnowledgeFeedback[]
 
   @@unique([email, tenantId])
   @@index([email])
@@ -130,6 +135,7 @@ model KnowledgeDocument {
   uploader  User             @relation(fields: [uploadedBy], references: [id], onDelete: Cascade)
   chunks    DocumentChunk[]
   versions  DocumentVersion[]
+  citations SourceCitation[]
 
   @@index([tenantId])
   @@index([status])
@@ -317,6 +323,8 @@ model Conversation {
   tenant       Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   messages     Message[]
   participants ConversationParticipant[]
+  ragQueries   RagQuery[]
+  settings     ConversationSettings?
 
   @@index([tenantId])
   @@index([createdAt])
@@ -356,6 +364,8 @@ model Message {
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   reactions    MessageReaction[]
+  citations    SourceCitation[]
+  feedback     KnowledgeFeedback[]
 
   @@index([conversationId])
   @@index([userId])
@@ -380,4 +390,126 @@ model MessageReaction {
   @@index([userId])
   @@index([tenantId])
   @@map("message_reactions")
+}
+
+// RAG Analytics Models
+model RagQuery {
+  id                String   @id @default(cuid())
+  tenantId          String
+  userId            String?
+  conversationId    String?
+  query             String   @db.Text
+  queryHash         String
+  sourcesUsed       Int      @default(0)
+  confidence        Float    @default(0.0)
+  retrievalStrategy String   @default("hybrid")
+  queryExpansions   Json?
+  responseTime      Int      // milliseconds
+  feedback          String?  // "helpful", "not_helpful", "partially_helpful"
+  feedbackComment   String?
+  createdAt         DateTime @default(now())
+
+  tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  conversation Conversation?    @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  citations    SourceCitation[]
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([conversationId])
+  @@index([queryHash])
+  @@index([createdAt])
+  @@index([confidence])
+  @@map("rag_queries")
+}
+
+model SourceCitation {
+  id             String   @id @default(cuid())
+  ragQueryId     String
+  messageId      String?
+  documentId     String
+  tenantId       String
+  relevanceScore Float
+  citationNumber Int
+  usageCount     Int      @default(1)
+  excerpt        String   @db.Text
+  createdAt      DateTime @default(now())
+
+  ragQuery RagQuery            @relation(fields: [ragQueryId], references: [id], onDelete: Cascade)
+  message  Message?            @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  document KnowledgeDocument   @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([ragQueryId])
+  @@index([messageId])
+  @@index([documentId])
+  @@index([tenantId])
+  @@index([relevanceScore])
+  @@map("source_citations")
+}
+
+model KnowledgeFeedback {
+  id             String   @id @default(cuid())
+  tenantId       String
+  userId         String
+  messageId      String?
+  ragQueryId     String?
+  rating         Int      // 1-5 scale
+  feedbackType   String   // "accuracy", "completeness", "relevance", "overall"
+  comments       String?  @db.Text
+  suggestions    Json?    // Array of improvement suggestions
+  createdAt      DateTime @default(now())
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message  Message?  @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  ragQuery RagQuery? @relation(fields: [ragQueryId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([messageId])
+  @@index([ragQueryId])
+  @@index([rating])
+  @@index([createdAt])
+  @@map("knowledge_feedback")
+}
+
+model RetrievalAnalytics {
+  id              String   @id @default(cuid())
+  tenantId        String
+  date            DateTime @db.Date
+  queryCount      Int      @default(0)
+  successRate     Float    @default(0.0)
+  averageConfidence Float  @default(0.0)
+  topQueries      Json?    // Array of most common queries
+  topSources      Json?    // Array of most cited sources
+  performanceMetrics Json? // Response times, cache hits, etc.
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, date])
+  @@index([tenantId])
+  @@index([date])
+  @@map("retrieval_analytics")
+}
+
+model ConversationSettings {
+  id             String   @id @default(cuid())
+  conversationId String   @unique
+  tenantId       String
+  ragMode        String   @default("hybrid") // "knowledge_only", "hybrid", "general"
+  maxSources     Int      @default(5)
+  confidenceThreshold Float @default(0.3)
+  citationStyle  String   @default("numbered") // "numbered", "inline", "footnote"
+  includeConfidence Boolean @default(true)
+  autoSuggestQuestions Boolean @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([tenantId])
+  @@map("conversation_settings")
 }
