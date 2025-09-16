@@ -3,6 +3,13 @@ import { EventEmitter } from 'events';
 import axios from 'axios';
 import crypto from 'crypto';
 
+import {
+  decryptFromString,
+  decryptOptionalString,
+  encryptOptionalString,
+  encryptToString
+} from '../utils/encryption';
+
 export interface OAuth2Provider {
   id: string;
   name: string;
@@ -54,7 +61,7 @@ export class OAuth2Manager extends EventEmitter {
   ): Promise<string> {
     try {
       // Encrypt client secret
-      const encryptedSecret = await this.encryptSecret(providerData.clientSecret);
+      const encryptedSecret = encryptToString(providerData.clientSecret);
 
       const provider = await this.prisma.oAuth2Provider.create({
         data: {
@@ -220,7 +227,12 @@ export class OAuth2Manager extends EventEmitter {
       include: { provider: true }
     });
 
-    if (!connection || !connection.refreshToken) {
+    if (!connection) {
+      throw new Error('Connection not found or no refresh token available');
+    }
+
+    const existingRefreshToken = decryptOptionalString(connection.refreshToken);
+    if (!existingRefreshToken) {
       throw new Error('Connection not found or no refresh token available');
     }
 
@@ -232,7 +244,7 @@ export class OAuth2Manager extends EventEmitter {
     try {
       const response = await axios.post(provider.tokenUrl, {
         grant_type: 'refresh_token',
-        refresh_token: connection.refreshToken,
+        refresh_token: existingRefreshToken,
         client_id: provider.clientId,
         client_secret: provider.clientSecret
       }, {
@@ -244,19 +256,22 @@ export class OAuth2Manager extends EventEmitter {
       const tokenData = response.data;
       const newTokens: OAuth2Token = {
         accessToken: tokenData.access_token,
-        refreshToken: tokenData.refresh_token || connection.refreshToken,
+        refreshToken: tokenData.refresh_token || existingRefreshToken,
         tokenType: tokenData.token_type || 'Bearer',
         expiresIn: tokenData.expires_in || 3600,
         expiresAt: new Date(Date.now() + (tokenData.expires_in || 3600) * 1000),
         scope: tokenData.scope || connection.scope
       };
 
+      const encryptedAccessToken = encryptToString(newTokens.accessToken);
+      const encryptedRefreshToken = encryptOptionalString(newTokens.refreshToken);
+
       // Update connection with new tokens
       await this.prisma.oAuth2Connection.update({
         where: { id: connectionId },
         data: {
-          accessToken: newTokens.accessToken,
-          refreshToken: newTokens.refreshToken,
+          accessToken: encryptedAccessToken,
+          refreshToken: encryptedRefreshToken,
           expiresAt: newTokens.expiresAt,
           scope: newTokens.scope,
           updatedAt: new Date()
@@ -301,7 +316,8 @@ export class OAuth2Manager extends EventEmitter {
     try {
       // Revoke token with provider if supported
       if (provider && this.supportsTokenRevocation(provider.name)) {
-        await this.revokeTokenWithProvider(provider, connection.accessToken);
+        const decryptedAccessToken = decryptFromString(connection.accessToken);
+        await this.revokeTokenWithProvider(provider, decryptedAccessToken);
       }
 
       // Delete connection from database
@@ -329,24 +345,29 @@ export class OAuth2Manager extends EventEmitter {
       orderBy: { createdAt: 'desc' }
     });
 
-    return connections.map(conn => ({
-      id: conn.id,
-      userId: conn.userId,
-      tenantId: conn.tenantId,
-      providerId: conn.providerId,
-      tokens: {
-        accessToken: conn.accessToken,
-        refreshToken: conn.refreshToken,
-        tokenType: conn.tokenType,
-        expiresIn: 0, // Calculate from expiresAt
-        expiresAt: conn.expiresAt,
-        scope: conn.scope
-      },
-      userInfo: conn.userInfo as any,
-      isActive: conn.isActive,
-      createdAt: conn.createdAt,
-      updatedAt: conn.updatedAt
-    }));
+    return connections.map(conn => {
+      const accessToken = decryptFromString(conn.accessToken);
+      const refreshToken = decryptOptionalString(conn.refreshToken);
+
+      return {
+        id: conn.id,
+        userId: conn.userId,
+        tenantId: conn.tenantId,
+        providerId: conn.providerId,
+        tokens: {
+          accessToken,
+          refreshToken: refreshToken ?? undefined,
+          tokenType: conn.tokenType,
+          expiresIn: 0, // Calculate from expiresAt
+          expiresAt: conn.expiresAt,
+          scope: conn.scope
+        },
+        userInfo: conn.userInfo as any,
+        isActive: conn.isActive,
+        createdAt: conn.createdAt,
+        updatedAt: conn.updatedAt
+      };
+    });
   }
 
   // Check if token is expired
@@ -388,7 +409,7 @@ export class OAuth2Manager extends EventEmitter {
     }
 
     // Decrypt client secret
-    const decryptedSecret = await this.decryptSecret(provider.clientSecret);
+    const decryptedSecret = decryptFromString(provider.clientSecret, { legacyBase64: true });
 
     const oauth2Provider: OAuth2Provider = {
       id: provider.id,
@@ -489,13 +510,16 @@ export class OAuth2Manager extends EventEmitter {
     tokens: OAuth2Token,
     userInfo: any
   ): Promise<OAuth2Connection> {
+    const encryptedAccessToken = encryptToString(tokens.accessToken);
+    const encryptedRefreshToken = encryptOptionalString(tokens.refreshToken);
+
     const connection = await this.prisma.oAuth2Connection.create({
       data: {
         userId,
         tenantId,
         providerId,
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
+        accessToken: encryptedAccessToken,
+        refreshToken: encryptedRefreshToken,
         tokenType: tokens.tokenType,
         expiresAt: tokens.expiresAt,
         scope: tokens.scope,
@@ -551,16 +575,6 @@ export class OAuth2Manager extends EventEmitter {
     }
   }
 
-  private async encryptSecret(secret: string): Promise<string> {
-    // Mock encryption - replace with actual encryption service
-    return Buffer.from(secret).toString('base64');
-  }
-
-  private async decryptSecret(encryptedSecret: string): Promise<string> {
-    // Mock decryption - replace with actual decryption service
-    return Buffer.from(encryptedSecret, 'base64').toString();
-  }
-
   private async loadProviders(): Promise<void> {
     try {
       const providers = await this.prisma.oAuth2Provider.findMany({
@@ -568,8 +582,8 @@ export class OAuth2Manager extends EventEmitter {
       });
 
       for (const provider of providers) {
-        const decryptedSecret = await this.decryptSecret(provider.clientSecret);
-        
+        const decryptedSecret = decryptFromString(provider.clientSecret, { legacyBase64: true });
+
         this.providers.set(provider.id, {
           id: provider.id,
           name: provider.name,
