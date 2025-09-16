@@ -6,8 +6,94 @@ import { ContextManager } from '../contextManager';
 import { ResponseHandler } from '../responseHandler';
 import { IntentDetector } from '../intentDetector';
 
+type WorkflowType = 'manual' | 'automatic' | 'scheduled';
+
 const router = Router();
 const prisma = new PrismaClient();
+
+const toRecord = (value: unknown): Record<string, unknown> | undefined => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value as Record<string, unknown>;
+};
+
+const asWorkflowType = (value: unknown): WorkflowType | undefined => {
+  return value === 'manual' || value === 'automatic' || value === 'scheduled'
+    ? value
+    : undefined;
+};
+
+const asBoolean = (value: unknown): boolean | undefined => {
+  return typeof value === 'boolean' ? value : undefined;
+};
+
+const asNumber = (value: unknown): number | undefined => {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+};
+
+const asStringArray = (value: unknown): string[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.filter((item): item is string => typeof item === 'string');
+};
+
+interface WorkflowMetadata {
+  type: WorkflowType;
+  requiresConfirmation: boolean;
+  estimatedDuration?: number;
+  tags: string[];
+}
+
+const extractWorkflowMetadata = (definition: unknown): WorkflowMetadata => {
+  const definitionRecord = toRecord(definition);
+
+  if (!definitionRecord) {
+    return {
+      type: 'manual',
+      requiresConfirmation: false,
+      tags: [],
+    };
+  }
+
+  const metadataRecord = toRecord(definitionRecord['metadata']);
+  const manualTriggerRecord = metadataRecord
+    ? toRecord(metadataRecord['manualTrigger'])
+    : undefined;
+
+  const type =
+    asWorkflowType(metadataRecord?.['type']) ||
+    asWorkflowType(metadataRecord?.['workflowType']) ||
+    asWorkflowType(definitionRecord['type']) ||
+    'manual';
+
+  const requiresConfirmation =
+    asBoolean(metadataRecord?.['requiresConfirmation']) ??
+    asBoolean(manualTriggerRecord?.['requiresConfirmation']) ??
+    false;
+
+  const estimatedDuration =
+    asNumber(metadataRecord?.['estimatedDuration']) ??
+    asNumber(metadataRecord?.['duration']) ??
+    asNumber(manualTriggerRecord?.['estimatedDuration']);
+
+  const tags = asStringArray(metadataRecord?.['tags']) ?? [];
+
+  return {
+    type,
+    requiresConfirmation,
+    estimatedDuration,
+    tags,
+  };
+};
+
+const mergeTags = (tagsValue: unknown, metadataTags: string[]): string[] => {
+  const columnTags = asStringArray(tagsValue) ?? [];
+  return Array.from(new Set([...columnTags, ...metadataTags]));
+};
 
 // Initialize services
 const chatTriggerService = new ChatTriggerService();
@@ -28,14 +114,15 @@ router.get('/workflows/available', async (req, res) => {
     const workflows = await prisma.workflow.findMany({
       where: {
         tenantId: tenantId as string,
-        isActive: true
+        status: 'active'
       },
       select: {
         id: true,
         name: true,
         description: true,
-        configuration: true,
+        definition: true,
         tags: true,
+        status: true,
         createdAt: true
       },
       orderBy: { name: 'asc' }
@@ -45,8 +132,8 @@ router.get('/workflows/available', async (req, res) => {
     const availableWorkflows = [];
     
     for (const workflow of workflows) {
-      const config = workflow.configuration as any;
-      const hasRequiredContext = conversationId 
+      const metadata = extractWorkflowMetadata(workflow.definition);
+      const hasRequiredContext = conversationId
         ? await contextManager.hasRequiredContext(conversationId as string, workflow.id)
         : true;
 
@@ -55,11 +142,11 @@ router.get('/workflows/available', async (req, res) => {
           id: workflow.id,
           name: workflow.name,
           description: workflow.description,
-          type: config?.type || 'manual',
-          isActive: true,
-          requiresConfirmation: config?.requiresConfirmation || false,
-          estimatedDuration: config?.estimatedDuration,
-          tags: workflow.tags || []
+          type: metadata.type,
+          isActive: workflow.status === 'active',
+          requiresConfirmation: metadata.requiresConfirmation,
+          estimatedDuration: metadata.estimatedDuration,
+          tags: mergeTags(workflow.tags, metadata.tags)
         });
       }
     }
