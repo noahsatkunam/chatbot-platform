@@ -19,6 +19,7 @@ import { workflowRoutes } from './workflows/routes/workflowRoutes';
 import { executionRoutes } from './workflows/routes/executionRoutes';
 import { templateRoutes } from './workflows/routes/templateRoutes';
 import { webhookRoutes } from './workflows/routes/webhookRoutes';
+import integrationsRoutes from './integrations/routes/integrationRoutes';
 
 // WebSocket server
 import { WebSocketServer } from './websocket/websocketServer';
@@ -96,6 +97,7 @@ app.use('/api/workflows', workflowRoutes);
 app.use('/api/executions', executionRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/webhooks', webhookRoutes);
+app.use('/api/integrations', integrationsRoutes);
 
 // Error handling middleware (must be last)
 app.use(errorHandler);
