@@ -72,6 +72,10 @@ model Tenant {
   ragQueries        RagQuery[]
   knowledgeFeedback KnowledgeFeedback[]
   retrievalAnalytics RetrievalAnalytics[]
+  workflows         Workflow[]
+  workflowExecutions WorkflowExecution[]
+  workflowCredentials WorkflowCredential[]
+  workflowAnalytics WorkflowAnalytics[]
   
   @@index([slug])
   @@index([status])
@@ -106,6 +110,9 @@ model User {
   documentVersions      DocumentVersion[]
   ragQueries            RagQuery[]
   knowledgeFeedback     KnowledgeFeedback[]
+  workflows             Workflow[]
+  workflowCredentials   WorkflowCredential[]
+  workflowTemplates     WorkflowTemplate[]
 
   @@unique([email, tenantId])
   @@index([email])
@@ -512,4 +519,146 @@ model ConversationSettings {
   @@index([conversationId])
   @@index([tenantId])
   @@map("conversation_settings")
+}
+
+// Workflow Automation Models
+model Workflow {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?  @db.Text
+  definition  Json     // n8n workflow definition
+  status      String   @default("draft") // "draft", "active", "inactive", "error"
+  version     Int      @default(1)
+  n8nId       String?  // n8n workflow ID
+  category    String   @default("general")
+  tags        Json?    // Array of tags
+  isTemplate  Boolean  @default(false)
+  createdBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastExecuted DateTime?
+
+  tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  creator    User                @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  executions WorkflowExecution[]
+  triggers   WorkflowTrigger[]
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([createdBy])
+  @@index([category])
+  @@map("workflows")
+}
+
+model WorkflowExecution {
+  id           String   @id @default(cuid())
+  workflowId   String
+  tenantId     String
+  n8nExecutionId String?
+  status       String   @default("running") // "running", "success", "error", "cancelled", "waiting"
+  startTime    DateTime @default(now())
+  endTime      DateTime?
+  duration     Int?     // milliseconds
+  triggerData  Json?    // Input data that triggered execution
+  resultData   Json?    // Output data from execution
+  errorMessage String?  @db.Text
+  logs         Json?    // Execution logs
+  triggeredBy  String?  // userId or "system" or "webhook"
+  metadata     Json?    // Additional execution metadata
+
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([workflowId])
+  @@index([tenantId])
+  @@index([status])
+  @@index([startTime])
+  @@map("workflow_executions")
+}
+
+model WorkflowTrigger {
+  id            String   @id @default(cuid())
+  workflowId    String
+  tenantId      String
+  triggerType   String   // "webhook", "schedule", "chat_message", "document_upload", "manual"
+  configuration Json     // Trigger-specific configuration
+  isActive      Boolean  @default(true)
+  webhookPath   String?  // Unique webhook path for this trigger
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([workflowId])
+  @@index([tenantId])
+  @@index([triggerType])
+  @@index([webhookPath])
+  @@map("workflow_triggers")
+}
+
+model WorkflowCredential {
+  id                  String   @id @default(cuid())
+  tenantId            String
+  name                String
+  service             String   // "openai", "slack", "gmail", "sheets", etc.
+  encryptedCredentials String  @db.Text // Encrypted credential data
+  isActive            Boolean  @default(true)
+  createdBy           String
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  lastUsed            DateTime?
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  creator User   @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([service])
+  @@map("workflow_credentials")
+}
+
+model WorkflowTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  description String   @db.Text
+  category    String
+  definition  Json     // n8n workflow template definition
+  tags        Json?    // Array of tags
+  isPublic    Boolean  @default(false)
+  usageCount  Int      @default(0)
+  rating      Float    @default(0.0)
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  creator User? @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@index([category])
+  @@index([isPublic])
+  @@index([rating])
+  @@map("workflow_templates")
+}
+
+model WorkflowAnalytics {
+  id              String   @id @default(cuid())
+  tenantId        String
+  date            DateTime @db.Date
+  totalExecutions Int      @default(0)
+  successfulExecutions Int @default(0)
+  failedExecutions Int     @default(0)
+  averageDuration Float    @default(0.0)
+  totalDuration   Int      @default(0) // milliseconds
+  uniqueWorkflows Int      @default(0)
+  topWorkflows    Json?    // Array of most executed workflows
+  errorSummary    Json?    // Common error types and counts
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, date])
+  @@index([tenantId])
+  @@index([date])
+  @@map("workflow_analytics")
 }
