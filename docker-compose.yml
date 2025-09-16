@@ -237,7 +237,7 @@ services:
       - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-admin}
       - N8N_DIAGNOSTICS_ENABLED=false
       - N8N_PERSONALIZATION_ENABLED=false
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-dev-encryption-key}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY to a 32-byte key (base64, hex, or 32-char UTF-8)}
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=false
       - DB_TYPE=sqlite
       - DB_SQLITE_DATABASE=/home/node/.n8n/database.sqlite
