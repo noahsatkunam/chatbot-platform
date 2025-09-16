@@ -45,11 +45,18 @@ router.delete(
 
 // Template Usage Routes
 router.post(
+  '/:templateId/install',
+  validateRequest(templateValidators.installTemplate),
+  templateController.installTemplate.bind(templateController)
+);
+
+router.post(
   '/:templateId/create-workflow',
   validateRequest(templateValidators.createFromTemplate),
   templateController.createFromTemplate.bind(templateController)
 );
 
+// Template Discovery Routes
 router.get(
   '/popular/list',
   templateController.getPopularTemplates.bind(templateController)
@@ -58,6 +65,41 @@ router.get(
 router.get(
   '/categories/overview',
   templateController.getTemplatesByCategory.bind(templateController)
+);
+
+router.get(
+  '/categories',
+  templateController.getCategories.bind(templateController)
+);
+
+// User Template Management
+router.get(
+  '/my/templates',
+  templateController.getMyTemplates.bind(templateController)
+);
+
+router.get(
+  '/favorites',
+  templateController.getFavoriteTemplates.bind(templateController)
+);
+
+router.post(
+  '/:templateId/favorite',
+  validateRequest(templateValidators.toggleFavorite),
+  templateController.toggleFavorite.bind(templateController)
+);
+
+router.post(
+  '/:templateId/rate',
+  validateRequest(templateValidators.rateTemplate),
+  templateController.rateTemplate.bind(templateController)
+);
+
+// Template Analytics
+router.get(
+  '/:templateId/analytics',
+  validateRequest(templateValidators.getTemplateAnalytics),
+  templateController.getTemplateAnalytics.bind(templateController)
 );
 
 export { router as templateRoutes };
