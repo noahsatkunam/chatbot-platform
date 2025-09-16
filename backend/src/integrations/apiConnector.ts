@@ -1,6 +1,13 @@
 import { PrismaClient } from '@prisma/client';
 import { EventEmitter } from 'events';
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import {
+  decryptPayload,
+  encryptPayload,
+  ensureEncryptionKey,
+  EncryptedPayload,
+  isEncryptedPayload
+} from '../utils/encryption';
 
 export interface ApiConnection {
   id: string;
@@ -59,10 +66,20 @@ export class ApiConnector extends EventEmitter {
   private connections: Map<string, ApiConnection> = new Map();
   private clients: Map<string, AxiosInstance> = new Map();
   private rateLimiters: Map<string, RateLimiter> = new Map();
+  private readonly encryptionKey: string | null;
 
   constructor() {
     super();
     this.prisma = new PrismaClient();
+    const configuredKey =
+      process.env.API_CONNECTOR_ENCRYPTION_KEY || process.env.ENCRYPTION_KEY || '';
+    const trimmedKey = configuredKey.trim();
+    this.encryptionKey = trimmedKey.length > 0 ? trimmedKey : null;
+    if (!this.encryptionKey) {
+      console.warn(
+        'ApiConnector encryption key is not configured. Connector creation will be blocked until a key is provided.'
+      );
+    }
     this.loadConnections();
   }
 
@@ -72,6 +89,9 @@ export class ApiConnector extends EventEmitter {
     connectionData: Omit<ApiConnection, 'id'>
   ): Promise<string> {
     try {
+      // Ensure encryption configuration is present before proceeding
+      this.requireEncryptionKey();
+
       // Validate connection
       await this.validateConnection(connectionData);
 
@@ -144,27 +164,41 @@ export class ApiConnector extends EventEmitter {
       throw new Error('Connection not found');
     }
 
-    // Encrypt auth if updated
-    let encryptedAuth = connection.authentication;
+    let decryptedAuthForCache: AuthConfig | undefined;
+    let encryptedAuth: EncryptedPayload | any = connection.authentication;
+
     if (updates.authentication) {
+      decryptedAuthForCache = updates.authentication;
       encryptedAuth = await this.encryptAuthCredentials(updates.authentication);
+    } else if (connection.authentication && !isEncryptedPayload(connection.authentication as any)) {
+      decryptedAuthForCache = await this.decryptAuthCredentials(connection.authentication as any);
+      encryptedAuth = await this.encryptAuthCredentials(decryptedAuthForCache);
+    }
+
+    const updateData: Record<string, any> = {
+      ...updates,
+      updatedAt: new Date()
+    };
+
+    if (typeof encryptedAuth !== 'undefined') {
+      updateData.authentication = encryptedAuth;
     }
 
     // Update database
     await this.prisma.apiConnection.update({
       where: { id: connectionId },
-      data: {
-        ...updates,
-        authentication: encryptedAuth,
-        updatedAt: new Date()
-      }
+      data: updateData
     });
 
     // Update cache
     const cachedConnection = this.connections.get(connectionId);
     if (cachedConnection) {
       Object.assign(cachedConnection, updates);
-      
+
+      if (decryptedAuthForCache) {
+        cachedConnection.authentication = decryptedAuthForCache;
+      }
+
       // Recreate HTTP client if needed
       if (updates.baseUrl || updates.authentication || updates.headers) {
         await this.createHttpClient(connectionId, cachedConnection);
@@ -539,25 +573,43 @@ export class ApiConnector extends EventEmitter {
     }
   }
 
-  private async encryptAuthCredentials(auth: AuthConfig): Promise<any> {
-    // Mock encryption - replace with actual encryption service
-    return {
-      ...auth,
-      credentials: Buffer.from(JSON.stringify(auth.credentials)).toString('base64')
-    };
+  private requireEncryptionKey(): string {
+    return ensureEncryptionKey(this.encryptionKey, 'ApiConnector');
+  }
+
+  private async encryptAuthCredentials(auth: AuthConfig): Promise<EncryptedPayload | null> {
+    if (!auth) {
+      return null;
+    }
+
+    const key = this.requireEncryptionKey();
+    return encryptPayload(auth, key);
   }
 
   private async decryptAuthCredentials(encryptedAuth: any): Promise<AuthConfig> {
-    // Mock decryption - replace with actual decryption service
-    try {
-      const credentials = JSON.parse(Buffer.from(encryptedAuth.credentials, 'base64').toString());
-      return {
-        ...encryptedAuth,
-        credentials
-      };
-    } catch {
-      return encryptedAuth;
+    if (!encryptedAuth) {
+      return { type: 'none', credentials: {} } as AuthConfig;
     }
+
+    if (isEncryptedPayload(encryptedAuth)) {
+      const key = this.requireEncryptionKey();
+      return decryptPayload<AuthConfig>(encryptedAuth, key);
+    }
+
+    try {
+      if (typeof encryptedAuth?.credentials === 'string') {
+        const decoded = Buffer.from(encryptedAuth.credentials, 'base64').toString();
+        const credentials = JSON.parse(decoded);
+        return {
+          ...encryptedAuth,
+          credentials
+        } as AuthConfig;
+      }
+    } catch (error) {
+      console.error('Failed to parse legacy authentication credentials', error);
+    }
+
+    return encryptedAuth as AuthConfig;
   }
 
   private async refreshOAuth2Token(connectionId: string, connection: ApiConnection): Promise<boolean> {
