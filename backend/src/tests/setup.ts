@@ -19,6 +19,7 @@ process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret-that-is-at-least-32-characters-long';
 process.env.BCRYPT_ROUNDS = '4'; // Lower rounds for faster tests
 process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/chatbot_platform_test';
+process.env.N8N_ENCRYPTION_KEY = 'ZGV2ZWxvcG1lbnRFbmNyeXB0aW9uS2V5MzJBQkNERUY=';
 
 // Global test timeout
 jest.setTimeout(30000);

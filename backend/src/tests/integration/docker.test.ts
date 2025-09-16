@@ -105,6 +105,7 @@ describe('Docker Integration Tests', () => {
         'REDIS_URL',
         'JWT_SECRET',
         'NODE_ENV',
+        'N8N_ENCRYPTION_KEY',
       ];
 
       const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);

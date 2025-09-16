@@ -1,6 +1,11 @@
 import axios, { AxiosInstance, AxiosResponse } from 'axios';
 import crypto from 'crypto';
 
+interface EncryptedCredentialPayload {
+  iv: string;
+  ciphertext: string;
+}
+
 export interface N8nWorkflow {
   id?: string;
   name: string;
@@ -35,16 +40,19 @@ export interface N8nCredential {
 export class N8nClient {
   private client: AxiosInstance;
   private baseUrl: string;
-  private encryptionKey: string;
+  private encryptionKey: Buffer;
+  private readonly encryptionKeyRaw: string;
 
   constructor(
     baseUrl: string = process.env.N8N_URL || 'http://n8n:5678',
     username: string = process.env.N8N_BASIC_AUTH_USER || 'admin',
     password: string = process.env.N8N_BASIC_AUTH_PASSWORD || 'admin',
-    encryptionKey: string = process.env.N8N_ENCRYPTION_KEY || 'dev-encryption-key'
+    encryptionKey: string = process.env.N8N_ENCRYPTION_KEY || ''
   ) {
     this.baseUrl = baseUrl;
-    this.encryptionKey = encryptionKey;
+    const normalizedEncryptionKey = encryptionKey.trim();
+    this.encryptionKeyRaw = normalizedEncryptionKey;
+    this.encryptionKey = this.resolveEncryptionKey(normalizedEncryptionKey);
     
     this.client = axios.create({
       baseURL: baseUrl,
@@ -314,26 +322,48 @@ export class N8nClient {
   }
 
   // Utility Methods
-  private encryptCredentialData(data: any): string {
+  private encryptCredentialData(data: any): EncryptedCredentialPayload {
     try {
-      const cipher = crypto.createCipher('aes-256-cbc', this.encryptionKey);
-      let encrypted = cipher.update(JSON.stringify(data), 'utf8', 'hex');
-      encrypted += cipher.final('hex');
-      return encrypted;
+      const iv = crypto.randomBytes(16);
+      const cipher = crypto.createCipheriv('aes-256-cbc', this.encryptionKey, iv);
+      const encryptedBuffer = Buffer.concat([
+        cipher.update(JSON.stringify(data), 'utf8'),
+        cipher.final()
+      ]);
+
+      return {
+        iv: iv.toString('base64'),
+        ciphertext: encryptedBuffer.toString('base64')
+      };
     } catch (error) {
       throw new Error(`Failed to encrypt credential data: ${error}`);
     }
   }
 
-  private decryptCredentialData(encryptedData: string): any {
-    try {
-      const decipher = crypto.createDecipher('aes-256-cbc', this.encryptionKey);
-      let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
-      decrypted += decipher.final('utf8');
-      return JSON.parse(decrypted);
-    } catch (error) {
-      throw new Error(`Failed to decrypt credential data: ${error}`);
+  private decryptCredentialData(encryptedData: unknown): any {
+    const payload = this.parseEncryptedPayload(encryptedData);
+
+    if (payload) {
+      try {
+        const iv = Buffer.from(payload.iv, 'base64');
+        const ciphertext = Buffer.from(payload.ciphertext, 'base64');
+        const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
+        const decryptedBuffer = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+        return JSON.parse(decryptedBuffer.toString('utf8'));
+      } catch (error) {
+        throw new Error(`Failed to decrypt credential data: ${error}`);
+      }
     }
+
+    if (typeof encryptedData === 'string' && this.encryptionKeyRaw) {
+      try {
+        return this.decryptLegacyCredentialData(encryptedData);
+      } catch (error) {
+        throw new Error(`Failed to decrypt credential data: ${error}`);
+      }
+    }
+
+    throw new Error('Failed to decrypt credential data: Unsupported encrypted payload format');
   }
 
   generateTenantWebhookPath(tenantId: string, workflowId: string): string {
@@ -381,5 +411,86 @@ export class N8nClient {
       isValid: errors.length === 0,
       errors
     };
+  }
+
+  private resolveEncryptionKey(encryptionKey: string): Buffer {
+    if (!encryptionKey) {
+      throw new Error('N8N_ENCRYPTION_KEY environment variable must be set to a strong 32-byte value.');
+    }
+
+    const normalizedKey = encryptionKey.startsWith('base64:')
+      ? encryptionKey.slice(7)
+      : encryptionKey;
+
+    const base64Key = this.tryDecodeBase64Key(normalizedKey);
+    if (base64Key) {
+      return base64Key;
+    }
+
+    if (/^[0-9a-fA-F]{64}$/.test(normalizedKey)) {
+      return Buffer.from(normalizedKey, 'hex');
+    }
+
+    if (Buffer.byteLength(normalizedKey, 'utf8') === 32) {
+      return Buffer.from(normalizedKey, 'utf8');
+    }
+
+    throw new Error('N8N_ENCRYPTION_KEY must be a 32-byte key encoded as base64, 64-character hex, or a 32-character UTF-8 string.');
+  }
+
+  private tryDecodeBase64Key(value: string): Buffer | null {
+    if (!/^[A-Za-z0-9+/=]+$/.test(value)) {
+      return null;
+    }
+
+    try {
+      const buffer = Buffer.from(value, 'base64');
+      if (buffer.length !== 32) {
+        return null;
+      }
+
+      const normalizedInput = value.replace(/=+$/, '');
+      const normalizedOutput = buffer.toString('base64').replace(/=+$/, '');
+      return normalizedInput === normalizedOutput ? buffer : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private parseEncryptedPayload(encryptedData: unknown): EncryptedCredentialPayload | null {
+    if (!encryptedData) {
+      return null;
+    }
+
+    if (this.isEncryptedCredentialPayload(encryptedData)) {
+      return encryptedData;
+    }
+
+    if (typeof encryptedData === 'string') {
+      try {
+        const parsed = JSON.parse(encryptedData);
+        return this.isEncryptedCredentialPayload(parsed) ? parsed : null;
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  private isEncryptedCredentialPayload(value: unknown): value is EncryptedCredentialPayload {
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      typeof (value as EncryptedCredentialPayload).iv === 'string' &&
+      typeof (value as EncryptedCredentialPayload).ciphertext === 'string'
+    );
+  }
+
+  private decryptLegacyCredentialData(encryptedData: string): any {
+    const decipher = crypto.createDecipher('aes-256-cbc', this.encryptionKeyRaw);
+    let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return JSON.parse(decrypted);
   }
 }
