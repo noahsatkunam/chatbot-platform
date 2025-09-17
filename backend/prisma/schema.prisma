@@ -76,6 +76,8 @@ model Tenant {
   workflowExecutions WorkflowExecution[]
   workflowCredentials WorkflowCredential[]
   workflowAnalytics WorkflowAnalytics[]
+  workflowPermissions WorkflowPermission[]
+  workflowConfirmations WorkflowConfirmation[]
   apiConnections    ApiConnection[]
   oauth2Providers   OAuth2Provider[]
   oauth2Connections OAuth2Connection[]
@@ -121,6 +123,8 @@ model User {
   knowledgeFeedback     KnowledgeFeedback[]
   workflows             Workflow[]
   workflowCredentials   WorkflowCredential[]
+  workflowPermissions   WorkflowPermission[]
+  workflowConfirmations WorkflowConfirmation[]
   workflowTemplates     WorkflowTemplate[]
   oauth2Connections     OAuth2Connection[]
   triggerLogs           TriggerLog[]
@@ -559,6 +563,8 @@ model Workflow {
   creator    User                @relation(fields: [createdBy], references: [id], onDelete: Cascade)
   executions WorkflowExecution[]
   triggers   WorkflowTrigger[]
+  permissions WorkflowPermission[]
+  confirmations WorkflowConfirmation[]
 
   @@index([tenantId])
   @@index([status])
@@ -632,6 +638,49 @@ model WorkflowCredential {
   @@index([tenantId])
   @@index([service])
   @@map("workflow_credentials")
+}
+
+model WorkflowPermission {
+  id         String   @id @default(cuid())
+  tenantId   String
+  workflowId String
+  userId     String?
+  role       Role?
+  canView    Boolean  @default(false)
+  canExecute Boolean  @default(false)
+  canCancel  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  user     User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([workflowId])
+  @@index([userId])
+  @@index([role])
+  @@map("workflow_permissions")
+}
+
+model WorkflowConfirmation {
+  id         String   @id
+  tenantId   String
+  workflowId String
+  userId     String
+  requestData Json
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([workflowId])
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("workflow_confirmations")
 }
 
 model WorkflowTemplate {
