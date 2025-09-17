@@ -374,32 +374,122 @@ export class WorkflowExecutor extends EventEmitter {
     tenantId: string
   ): Promise<boolean> {
     try {
-      // Check if execution exists and user has permission to cancel
-      const execution = this.activeExecutions.get(executionId);
-      if (!execution) {
+      const executionRecord = await this.prisma.workflowExecution.findFirst({
+        where: {
+          id: executionId,
+          tenantId
+        },
+        select: {
+          workflowId: true,
+          triggeredBy: true
+        }
+      });
+
+      if (!executionRecord) {
         return false;
       }
 
-      // Cancel in workflow service
-      const cancelled = await this.workflowService.cancelExecution(executionId, tenantId);
-      
-      if (cancelled) {
+      if (executionRecord.triggeredBy && executionRecord.triggeredBy !== userId) {
+        const user = await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { role: true }
+        });
+
+        const permissions = await this.getRolePermissions(user?.role || 'user', tenantId);
+        if (!permissions.canCancel) {
+          return false;
+        }
+      }
+
+      await this.workflowService.cancelExecution(executionId, tenantId);
+
+      const execution = this.activeExecutions.get(executionId);
+      if (execution) {
         execution.status = 'cancelled';
         execution.endTime = new Date();
         execution.duration = execution.endTime.getTime() - execution.startTime.getTime();
-
-        this.emit('execution:cancelled', {
-          executionId,
-          userId,
-          tenantId
-        });
       }
 
-      return cancelled;
+      this.emit('execution:cancelled', {
+        executionId,
+        userId,
+        tenantId
+      });
+
+      return true;
 
     } catch (error) {
       console.error('Error cancelling execution:', error);
       return false;
+    }
+  }
+
+  async retryExecution(
+    executionId: string,
+    userId: string,
+    tenantId: string
+  ): Promise<ExecutionResult | null> {
+    try {
+      const executionRecord = await this.prisma.workflowExecution.findFirst({
+        where: {
+          id: executionId,
+          tenantId
+        },
+        select: {
+          workflowId: true,
+          triggeredBy: true
+        }
+      });
+
+      if (!executionRecord) {
+        return null;
+      }
+
+      if (executionRecord.triggeredBy && executionRecord.triggeredBy !== userId) {
+        const user = await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { role: true }
+        });
+
+        const permissions = await this.getRolePermissions(user?.role || 'user', tenantId);
+        if (!permissions.canExecute) {
+          return null;
+        }
+      }
+
+      const newExecutionId = await this.workflowService.retryExecution(executionId, tenantId);
+
+      const executionResult: ExecutionResult = {
+        executionId: newExecutionId,
+        workflowId: executionRecord.workflowId,
+        status: 'started',
+        startTime: new Date()
+      };
+
+      this.activeExecutions.set(newExecutionId, executionResult);
+
+      this.emit('execution:started', {
+        executionId: newExecutionId,
+        workflowId: executionRecord.workflowId,
+        retryOf: executionId
+      });
+
+      return executionResult;
+
+    } catch (error) {
+      if (error instanceof Error) {
+        const message = error.message.toLowerCase();
+        if (
+          message.includes('not found') ||
+          message.includes('cannot be retried') ||
+          message.includes('only failed executions')
+        ) {
+          return null;
+        }
+      }
+
+      console.error('Error retrying execution:', error);
+      throw error;
     }
   }
 

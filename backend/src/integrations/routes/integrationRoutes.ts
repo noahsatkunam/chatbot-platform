@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { ChatTriggerService } from '../chatTriggerService';
-import { WorkflowExecutor } from '../workflowExecutor';
+import {
+  ChatTriggerService,
+  ChatTriggerContext,
+  TriggerMatch
+} from '../chatTriggerService';
+import { ExecutionRequest, WorkflowExecutor } from '../workflowExecutor';
 import { ContextManager } from '../contextManager';
 import { ResponseHandler } from '../responseHandler';
 import { IntentDetector } from '../intentDetector';
@@ -164,31 +168,98 @@ router.post('/workflows/execute', async (req, res) => {
   try {
     const { workflowId, conversationId, userId, tenantId, context } = req.body;
 
-    if (!workflowId || !userId || !tenantId) {
-      return res.status(400).json({ error: 'workflowId, userId, and tenantId are required' });
+    if (typeof workflowId !== 'string' || !workflowId) {
+      return res.status(400).json({ error: 'workflowId is required' });
     }
 
-    // Create execution context
-    const executionContext = {
+    if (typeof userId !== 'string' || !userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    if (typeof tenantId !== 'string' || !tenantId) {
+      return res.status(400).json({ error: 'tenantId is required' });
+    }
+
+    const workflow = await prisma.workflow.findFirst({
+      where: {
+        id: workflowId,
+        tenantId
+      },
+      select: {
+        id: true,
+        name: true,
+        definition: true
+      }
+    });
+
+    if (!workflow) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
+
+    const workflowMetadata = extractWorkflowMetadata(workflow.definition);
+    const contextRecord = toRecord(context) ?? {};
+    const parametersCandidate = toRecord(contextRecord['parameters']);
+    const executionParameters = parametersCandidate ?? contextRecord;
+    const previousMessagesRaw = contextRecord['previousMessages'];
+    const previousMessages = Array.isArray(previousMessagesRaw)
+      ? previousMessagesRaw
+      : undefined;
+
+    const chatMetadata: Record<string, unknown> = {
+      ...contextRecord,
+      source: typeof contextRecord['source'] === 'string'
+        ? contextRecord['source']
+        : 'manual_trigger'
+    };
+    delete chatMetadata['previousMessages'];
+
+    const triggerMatch: TriggerMatch = {
       workflowId,
-      conversationId,
-      userId,
-      tenantId,
-      source: 'manual_trigger',
-      metadata: context || {},
-      timestamp: new Date()
+      workflowName: workflow.name,
+      confidence: 1,
+      triggerType: 'command',
+      matchedText: 'manual_trigger',
+      parameters: executionParameters,
+      requiresConfirmation: workflowMetadata.requiresConfirmation
     };
 
-    // Execute workflow
-    const executionId = await workflowExecutor.executeWorkflow(
-      workflowId,
-      executionContext
-    );
+    const chatContext: ChatTriggerContext = {
+      conversationId:
+        typeof conversationId === 'string' && conversationId.trim().length > 0
+          ? conversationId
+          : `manual_${workflowId}`,
+      messageId: `manual_${Date.now()}`,
+      messageContent:
+        typeof contextRecord['message'] === 'string' && contextRecord['message'].trim().length > 0
+          ? (contextRecord['message'] as string)
+          : `Manual execution of ${workflow.name}`,
+      userId,
+      tenantId,
+      messageType: 'user',
+      timestamp: new Date(),
+      metadata: chatMetadata,
+      previousMessages
+    };
 
-    res.json({ 
-      success: true, 
-      executionId,
-      message: 'Workflow execution started'
+    const executionRequest: ExecutionRequest = {
+      workflowId,
+      triggerMatch,
+      chatContext,
+      parameters: executionParameters,
+      userConfirmed: req.body?.userConfirmed !== false
+    };
+
+    const executionResult = await workflowExecutor.executeWorkflow(executionRequest);
+
+    res.json({
+      success: executionResult.status !== 'failed',
+      executionId: executionResult.executionId,
+      status: executionResult.status,
+      chatResponse: executionResult.chatResponse,
+      message: executionResult.status === 'failed'
+        ? executionResult.error || 'Workflow execution failed to start'
+        : 'Workflow execution started',
+      execution: executionResult
     });
 
   } catch (error) {
@@ -256,13 +327,17 @@ router.get('/executions/:executionId', async (req, res) => {
 router.post('/executions/:executionId/cancel', async (req, res) => {
   try {
     const { executionId } = req.params;
-    const { tenantId } = req.body;
+    const { tenantId, userId } = req.body;
 
-    if (!tenantId) {
+    if (typeof tenantId !== 'string' || !tenantId) {
       return res.status(400).json({ error: 'tenantId is required' });
     }
 
-    const success = await workflowExecutor.cancelExecution(executionId, tenantId);
+    if (typeof userId !== 'string' || !userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const success = await workflowExecutor.cancelExecution(executionId, userId, tenantId);
 
     if (!success) {
       return res.status(404).json({ error: 'Execution not found or cannot be cancelled' });
@@ -280,22 +355,28 @@ router.post('/executions/:executionId/cancel', async (req, res) => {
 router.post('/executions/:executionId/retry', async (req, res) => {
   try {
     const { executionId } = req.params;
-    const { tenantId } = req.body;
+    const { tenantId, userId } = req.body;
 
-    if (!tenantId) {
+    if (typeof tenantId !== 'string' || !tenantId) {
       return res.status(400).json({ error: 'tenantId is required' });
     }
 
-    const newExecutionId = await workflowExecutor.retryExecution(executionId, tenantId);
+    if (typeof userId !== 'string' || !userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
 
-    if (!newExecutionId) {
+    const executionResult = await workflowExecutor.retryExecution(executionId, userId, tenantId);
+
+    if (!executionResult) {
       return res.status(404).json({ error: 'Execution not found or cannot be retried' });
     }
 
-    res.json({ 
-      success: true, 
-      executionId: newExecutionId,
-      message: 'Execution retried'
+    res.json({
+      success: true,
+      executionId: executionResult.executionId,
+      status: executionResult.status,
+      message: 'Execution retry started',
+      execution: executionResult
     });
 
   } catch (error) {
@@ -307,47 +388,90 @@ router.post('/executions/:executionId/retry', async (req, res) => {
 // Process chat message for triggers
 router.post('/chat/process', async (req, res) => {
   try {
-    const { message, conversationId, userId, tenantId } = req.body;
+    const {
+      message,
+      conversationId,
+      userId,
+      tenantId,
+      messageId: providedMessageId,
+      timestamp,
+      metadata,
+      previousMessages
+    } = req.body;
 
-    if (!message || !userId || !tenantId) {
-      return res.status(400).json({ error: 'message, userId, and tenantId are required' });
+    if (typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({ error: 'message is required' });
     }
+
+    if (typeof userId !== 'string' || !userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    if (typeof tenantId !== 'string' || !tenantId) {
+      return res.status(400).json({ error: 'tenantId is required' });
+    }
+
+    if (typeof conversationId !== 'string' || conversationId.trim().length === 0) {
+      return res.status(400).json({ error: 'conversationId is required' });
+    }
+
+    const messageId =
+      typeof providedMessageId === 'string' && providedMessageId.trim().length > 0
+        ? providedMessageId
+        : `msg_${Date.now()}`;
+
+    const messageTimestamp = timestamp ? new Date(timestamp) : new Date();
+    if (Number.isNaN(messageTimestamp.getTime())) {
+      return res.status(400).json({ error: 'Invalid timestamp value' });
+    }
+
+    const metadataRecord = toRecord(metadata) ?? {};
+    const normalizedPreviousMessages = Array.isArray(previousMessages)
+      ? previousMessages
+      : undefined;
 
     // Detect intent
     const intentResult = await intentDetector.detectIntent(message, userId, tenantId);
 
-    // Check for workflow triggers
-    const triggerMatches = await chatTriggerService.checkTriggers(
-      message,
-      { conversationId, userId, tenantId }
-    );
-
-    // Update conversation context
-    if (conversationId) {
-      await contextManager.updateConversationContext(conversationId, {
-        messageId: `msg_${Date.now()}`,
-        content: message,
-        userId,
-        timestamp: new Date(),
-        messageType: 'user',
-        intent: intentResult.intent,
-        entities: intentResult.entities
-      });
-    }
-
-    const response = {
-      intentResult,
-      triggerMatches,
-      suggestions: triggerMatches.length > 0 ? 
-        triggerMatches.map(match => ({
-          workflowId: match.workflowId,
-          workflowName: match.workflowName,
-          confidence: match.confidence,
-          requiresConfirmation: match.requiresConfirmation
-        })) : []
+    const chatContext: ChatTriggerContext = {
+      conversationId,
+      messageId,
+      messageContent: message,
+      userId,
+      tenantId,
+      messageType: 'user',
+      timestamp: messageTimestamp,
+      metadata: metadataRecord,
+      previousMessages: normalizedPreviousMessages
     };
 
-    res.json(response);
+    // Check for workflow triggers
+    const triggerMatches = await chatTriggerService.detectTriggers(chatContext);
+
+    // Update conversation context
+    await contextManager.updateConversationContext(conversationId, {
+      messageId,
+      content: message,
+      userId,
+      timestamp: messageTimestamp,
+      messageType: 'user',
+      intent: intentResult.intent,
+      entities: intentResult.entities,
+      metadata: metadataRecord
+    });
+
+    const suggestions = triggerMatches.map(match => ({
+      workflowId: match.workflowId,
+      workflowName: match.workflowName,
+      confidence: match.confidence,
+      requiresConfirmation: match.requiresConfirmation
+    }));
+
+    res.json({
+      intentResult,
+      triggerMatches,
+      suggestions
+    });
 
   } catch (error) {
     console.error('Error processing chat message:', error);
