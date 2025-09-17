@@ -43,6 +43,20 @@ export interface RetryConfig {
   retryableStatusCodes: number[];
 }
 
+const DEFAULT_RATE_LIMIT: RateLimitConfig = {
+  requestsPerSecond: 5,
+  requestsPerMinute: 300,
+  requestsPerHour: 1000,
+  burstLimit: 10
+};
+
+const DEFAULT_RETRY_CONFIG: RetryConfig = {
+  maxRetries: 3,
+  backoffMultiplier: 2,
+  maxBackoffMs: 10000,
+  retryableStatusCodes: [429, 500, 502, 503, 504]
+};
+
 export interface ApiRequest {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   endpoint: string;
@@ -101,25 +115,37 @@ export class ApiConnector extends EventEmitter {
       // Ensure encryption configuration is present before proceeding
       this.requireEncryptionKey();
 
-      // Validate connection
       await this.validateConnection(connectionData);
 
+      const normalizedRateLimit = this.normalizeRateLimit(connectionData.rateLimit);
+      const normalizedRetryConfig = this.normalizeRetryConfig(connectionData.retryConfig);
+      const normalizedHeaders = this.normalizeHeaders(connectionData.headers);
+      const sanitizedMetadata = this.prepareMetadata(connectionData.metadata, { defaultEmpty: true });
+
+      const validatedConnection: Omit<ApiConnection, 'id'> = {
+        ...connectionData,
+        headers: normalizedHeaders,
+        rateLimit: normalizedRateLimit,
+        retryConfig: normalizedRetryConfig,
+        metadata: sanitizedMetadata
+      };
+
       // Encrypt sensitive data
-      const encryptedAuth = await this.encryptAuthCredentials(connectionData.authentication);
+      const encryptedAuth = await this.encryptAuthCredentials(validatedConnection.authentication);
 
       // Save to database
       const connection = await this.prisma.apiConnection.create({
         data: {
           tenantId,
-          name: connectionData.name,
-          type: connectionData.type,
-          baseUrl: connectionData.baseUrl,
+          name: validatedConnection.name,
+          type: validatedConnection.type,
+          baseUrl: validatedConnection.baseUrl,
           authentication: encryptedAuth,
-          headers: connectionData.headers,
-          rateLimit: connectionData.rateLimit,
-          retryConfig: connectionData.retryConfig,
-          isActive: connectionData.isActive,
-          metadata: connectionData.metadata
+          headers: normalizedHeaders,
+          rateLimit: normalizedRateLimit,
+          retryConfig: normalizedRetryConfig,
+          isActive: validatedConnection.isActive,
+          metadata: sanitizedMetadata
         }
       });
 
@@ -129,12 +155,12 @@ export class ApiConnector extends EventEmitter {
         name: connection.name,
         type: connection.type,
         baseUrl: connection.baseUrl,
-        authentication: connectionData.authentication, // Keep decrypted in memory
-        headers: connection.headers as Record<string, string>,
-        rateLimit: connection.rateLimit as RateLimitConfig,
-        retryConfig: connection.retryConfig as RetryConfig,
+        authentication: validatedConnection.authentication, // Keep decrypted in memory
+        headers: this.normalizeHeaders(connection.headers),
+        rateLimit: this.normalizeRateLimit(connection.rateLimit),
+        retryConfig: this.normalizeRetryConfig(connection.retryConfig),
         isActive: connection.isActive,
-        metadata: connection.metadata
+        metadata: this.prepareMetadata(connection.metadata)
       };
 
       const cacheKey = this.getCacheKey(tenantId, connection.id);
@@ -188,13 +214,56 @@ export class ApiConnector extends EventEmitter {
       encryptedAuth = await this.encryptAuthCredentials(decryptedAuthForCache);
     }
 
+    if (typeof updates.rateLimit !== 'undefined') {
+      this.assertValidRateLimit(updates.rateLimit);
+    }
+
+    const normalizedHeaders =
+      typeof updates.headers !== 'undefined' ? this.normalizeHeaders(updates.headers) : undefined;
+    const normalizedRateLimit =
+      typeof updates.rateLimit !== 'undefined' ? this.normalizeRateLimit(updates.rateLimit) : undefined;
+    const normalizedRetryConfig =
+      typeof updates.retryConfig !== 'undefined'
+        ? this.normalizeRetryConfig(updates.retryConfig)
+        : undefined;
+    const sanitizedMetadata =
+      typeof updates.metadata !== 'undefined' ? this.prepareMetadata(updates.metadata) : undefined;
+
     const updateData: Record<string, any> = {
-      ...updates,
       updatedAt: new Date()
     };
 
+    if (typeof updates.name !== 'undefined') {
+      updateData.name = updates.name;
+    }
+    if (typeof updates.type !== 'undefined') {
+      updateData.type = updates.type;
+    }
+    if (typeof updates.baseUrl !== 'undefined') {
+      updateData.baseUrl = updates.baseUrl;
+    }
+    if (typeof updates.headers !== 'undefined') {
+      updateData.headers = normalizedHeaders;
+    }
+    if (normalizedRateLimit) {
+      updateData.rateLimit = normalizedRateLimit;
+    }
+    if (normalizedRetryConfig) {
+      updateData.retryConfig = normalizedRetryConfig;
+    }
+    if (typeof updates.isActive !== 'undefined') {
+      updateData.isActive = updates.isActive;
+    }
+    if (typeof updates.metadata !== 'undefined') {
+      updateData.metadata = sanitizedMetadata;
+    }
+
     if (typeof encryptedAuth !== 'undefined') {
       updateData.authentication = encryptedAuth;
+    }
+
+    if (Object.keys(updateData).length === 1) {
+      return;
     }
 
     // Update database
@@ -207,20 +276,50 @@ export class ApiConnector extends EventEmitter {
     const cacheKey = this.getCacheKey(tenantId, connectionId);
     const cachedConnection = this.connections.get(cacheKey);
     if (cachedConnection) {
-      Object.assign(cachedConnection.connection, updates);
+      const sanitizedUpdates: Partial<ApiConnection> = {};
+
+      if (typeof updates.name !== 'undefined') {
+        sanitizedUpdates.name = updates.name;
+      }
+      if (typeof updates.type !== 'undefined') {
+        sanitizedUpdates.type = updates.type;
+      }
+      if (typeof updates.baseUrl !== 'undefined') {
+        sanitizedUpdates.baseUrl = updates.baseUrl;
+      }
+      if (typeof updates.headers !== 'undefined') {
+        sanitizedUpdates.headers = normalizedHeaders;
+      }
+      if (normalizedRateLimit) {
+        sanitizedUpdates.rateLimit = normalizedRateLimit;
+      }
+      if (normalizedRetryConfig) {
+        sanitizedUpdates.retryConfig = normalizedRetryConfig;
+      }
+      if (typeof updates.isActive !== 'undefined') {
+        sanitizedUpdates.isActive = updates.isActive;
+      }
+      if (typeof updates.metadata !== 'undefined') {
+        sanitizedUpdates.metadata = sanitizedMetadata;
+      }
+
+      Object.assign(cachedConnection.connection, sanitizedUpdates);
 
       if (decryptedAuthForCache) {
         cachedConnection.connection.authentication = decryptedAuthForCache;
       }
 
-      // Recreate HTTP client if needed
-      if (updates.baseUrl || updates.authentication || updates.headers) {
+      const shouldRecreateClient =
+        typeof updates.baseUrl !== 'undefined' ||
+        typeof updates.authentication !== 'undefined' ||
+        typeof updates.headers !== 'undefined';
+
+      if (shouldRecreateClient) {
         await this.createHttpClient(tenantId, connectionId, cachedConnection.connection);
       }
 
-      // Update rate limiter if needed
-      if (updates.rateLimit) {
-        this.setupRateLimiter(tenantId, connectionId, updates.rateLimit);
+      if (normalizedRateLimit) {
+        this.setupRateLimiter(tenantId, connectionId, normalizedRateLimit);
       }
     }
 
@@ -390,17 +489,28 @@ export class ApiConnector extends EventEmitter {
     // Decrypt authentication
     const decryptedAuth = await this.decryptAuthCredentials(connection.authentication as any);
 
+    const rateLimit = this.normalizeRateLimit(
+      (connection as unknown as { rateLimit?: unknown; rateLimits?: unknown }).rateLimit ??
+        (connection as unknown as { rateLimits?: unknown }).rateLimits
+    );
+    const retryConfig = this.normalizeRetryConfig(
+      (connection as unknown as { retryConfig?: unknown }).retryConfig ??
+        (connection.metadata as Record<string, unknown> | null | undefined)?.retryConfig
+    );
+    const headers = this.normalizeHeaders(connection.headers);
+    const metadata = this.prepareMetadata(connection.metadata);
+
     const apiConnection: ApiConnection = {
       id: connection.id,
       name: connection.name,
       type: connection.type,
       baseUrl: connection.baseUrl,
       authentication: decryptedAuth,
-      headers: connection.headers as Record<string, string>,
-      rateLimit: connection.rateLimit as RateLimitConfig,
-      retryConfig: connection.retryConfig as RetryConfig,
+      headers,
+      rateLimit,
+      retryConfig,
       isActive: connection.isActive,
-      metadata: connection.metadata
+      metadata
     };
 
     // Cache and setup
@@ -425,18 +535,27 @@ export class ApiConnector extends EventEmitter {
 
     for (const conn of connections) {
       const decryptedAuth = await this.decryptAuthCredentials(conn.authentication as any);
-      
+
+      const rateLimit = this.normalizeRateLimit(
+        (conn as unknown as { rateLimit?: unknown; rateLimits?: unknown }).rateLimit ??
+          (conn as unknown as { rateLimits?: unknown }).rateLimits
+      );
+      const retryConfig = this.normalizeRetryConfig(
+        (conn as unknown as { retryConfig?: unknown }).retryConfig ??
+          (conn.metadata as Record<string, unknown> | null | undefined)?.retryConfig
+      );
+
       result.push({
         id: conn.id,
         name: conn.name,
         type: conn.type,
         baseUrl: conn.baseUrl,
         authentication: decryptedAuth,
-        headers: conn.headers as Record<string, string>,
-        rateLimit: conn.rateLimit as RateLimitConfig,
-        retryConfig: conn.retryConfig as RetryConfig,
+        headers: this.normalizeHeaders(conn.headers),
+        rateLimit,
+        retryConfig,
         isActive: conn.isActive,
-        metadata: conn.metadata
+        metadata: this.prepareMetadata(conn.metadata)
       });
     }
 
@@ -449,9 +568,10 @@ export class ApiConnector extends EventEmitter {
     connectionId: string,
     connection: ApiConnection
   ): Promise<void> {
+    const headers = this.normalizeHeaders(connection.headers);
     const client = axios.create({
       baseURL: connection.baseUrl,
-      headers: connection.headers
+      headers: { ...headers }
     });
 
     // Add authentication interceptor
@@ -528,6 +648,187 @@ export class ApiConnector extends EventEmitter {
     return config;
   }
 
+  private normalizeHeaders(headers: unknown): Record<string, string> {
+    if (!headers || typeof headers !== 'object') {
+      return {};
+    }
+
+    const normalized: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+      if (typeof value === 'undefined' || value === null) {
+        continue;
+      }
+      normalized[String(key)] = String(value);
+    }
+
+    return normalized;
+  }
+
+  private prepareMetadata(
+    metadata: any,
+    options: { defaultEmpty?: boolean } = {}
+  ): any {
+    const { defaultEmpty = false } = options;
+
+    if (typeof metadata === 'undefined') {
+      return defaultEmpty ? {} : undefined;
+    }
+
+    if (metadata === null) {
+      return null;
+    }
+
+    try {
+      const cloned = JSON.parse(JSON.stringify(metadata));
+      if (cloned && typeof cloned === 'object' && !Array.isArray(cloned)) {
+        if (Object.prototype.hasOwnProperty.call(cloned, 'retryConfig')) {
+          delete (cloned as Record<string, unknown>).retryConfig;
+        }
+      }
+      return cloned;
+    } catch {
+      if (typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata)) {
+        const shallow = { ...(metadata as Record<string, unknown>) };
+        if (Object.prototype.hasOwnProperty.call(shallow, 'retryConfig')) {
+          delete shallow.retryConfig;
+        }
+        return shallow;
+      }
+      return metadata;
+    }
+  }
+
+  private normalizeRateLimit(rateLimit: unknown): RateLimitConfig {
+    const base: RateLimitConfig = { ...DEFAULT_RATE_LIMIT };
+
+    if (rateLimit && typeof rateLimit === 'object') {
+      const candidate = rateLimit as Partial<Record<keyof RateLimitConfig, unknown>>;
+      const perSecond = this.getPositiveInteger(candidate.requestsPerSecond);
+      if (typeof perSecond !== 'undefined') {
+        base.requestsPerSecond = perSecond;
+      }
+      const perMinute = this.getPositiveInteger(candidate.requestsPerMinute);
+      if (typeof perMinute !== 'undefined') {
+        base.requestsPerMinute = perMinute;
+      }
+      const perHour = this.getPositiveInteger(candidate.requestsPerHour);
+      if (typeof perHour !== 'undefined') {
+        base.requestsPerHour = perHour;
+      }
+      const burst = this.getPositiveInteger(candidate.burstLimit);
+      if (typeof burst !== 'undefined') {
+        base.burstLimit = burst;
+      }
+    }
+
+    base.requestsPerSecond = Math.max(1, base.requestsPerSecond);
+    base.requestsPerMinute = Math.max(base.requestsPerSecond, base.requestsPerMinute);
+    base.requestsPerHour = Math.max(base.requestsPerMinute, base.requestsPerHour);
+    base.burstLimit = Math.max(base.requestsPerSecond, base.burstLimit);
+
+    return {
+      requestsPerSecond: base.requestsPerSecond,
+      requestsPerMinute: base.requestsPerMinute,
+      requestsPerHour: base.requestsPerHour,
+      burstLimit: base.burstLimit
+    };
+  }
+
+  private normalizeRetryConfig(retryConfig: unknown): RetryConfig {
+    const base: RetryConfig = {
+      maxRetries: DEFAULT_RETRY_CONFIG.maxRetries,
+      backoffMultiplier: DEFAULT_RETRY_CONFIG.backoffMultiplier,
+      maxBackoffMs: DEFAULT_RETRY_CONFIG.maxBackoffMs,
+      retryableStatusCodes: [...DEFAULT_RETRY_CONFIG.retryableStatusCodes]
+    };
+
+    if (retryConfig && typeof retryConfig === 'object') {
+      const candidate = retryConfig as Partial<Record<keyof RetryConfig, unknown>>;
+      const maxRetries = this.getNonNegativeInteger(candidate.maxRetries);
+      if (typeof maxRetries !== 'undefined') {
+        base.maxRetries = maxRetries;
+      }
+      const backoffMultiplier = this.getPositiveNumber(candidate.backoffMultiplier);
+      if (typeof backoffMultiplier !== 'undefined') {
+        base.backoffMultiplier = backoffMultiplier;
+      }
+      const maxBackoffMs = this.getNonNegativeInteger(candidate.maxBackoffMs);
+      if (typeof maxBackoffMs !== 'undefined') {
+        base.maxBackoffMs = maxBackoffMs;
+      }
+      if (Array.isArray(candidate.retryableStatusCodes)) {
+        const statusCodes = candidate.retryableStatusCodes
+          .map(code => this.getInteger(code))
+          .filter((code): code is number => typeof code === 'number' && code >= 100 && code <= 599);
+        if (statusCodes.length > 0) {
+          base.retryableStatusCodes = Array.from(new Set(statusCodes));
+        }
+      }
+    }
+
+    if (base.retryableStatusCodes.length === 0) {
+      base.retryableStatusCodes = [...DEFAULT_RETRY_CONFIG.retryableStatusCodes];
+    }
+
+    return {
+      maxRetries: base.maxRetries,
+      backoffMultiplier: base.backoffMultiplier,
+      maxBackoffMs: base.maxBackoffMs,
+      retryableStatusCodes: [...base.retryableStatusCodes]
+    };
+  }
+
+  private assertValidRateLimit(rateLimit: RateLimitConfig): void {
+    const perSecond = this.getPositiveInteger(rateLimit.requestsPerSecond);
+    const perMinute = this.getPositiveInteger(rateLimit.requestsPerMinute);
+    const perHour = this.getPositiveInteger(rateLimit.requestsPerHour);
+    const burstLimit = this.getPositiveInteger(rateLimit.burstLimit);
+
+    if (
+      typeof perSecond === 'undefined' ||
+      typeof perMinute === 'undefined' ||
+      typeof perHour === 'undefined' ||
+      typeof burstLimit === 'undefined' ||
+      perMinute < perSecond ||
+      perHour < perMinute ||
+      burstLimit < perSecond
+    ) {
+      throw new Error('Invalid rate limit configuration');
+    }
+  }
+
+  private getPositiveInteger(value: unknown): number | undefined {
+    const numeric = typeof value === 'string' ? Number(value) : value;
+    if (typeof numeric === 'number' && Number.isFinite(numeric) && numeric > 0) {
+      return Math.floor(numeric);
+    }
+    return undefined;
+  }
+
+  private getNonNegativeInteger(value: unknown): number | undefined {
+    const numeric = typeof value === 'string' ? Number(value) : value;
+    if (typeof numeric === 'number' && Number.isFinite(numeric) && numeric >= 0) {
+      return Math.floor(numeric);
+    }
+    return undefined;
+  }
+
+  private getPositiveNumber(value: unknown): number | undefined {
+    const numeric = typeof value === 'string' ? Number(value) : value;
+    if (typeof numeric === 'number' && Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+    return undefined;
+  }
+
+  private getInteger(value: unknown): number | undefined {
+    const numeric = typeof value === 'string' ? Number(value) : value;
+    if (typeof numeric === 'number' && Number.isFinite(numeric)) {
+      return Math.trunc(numeric);
+    }
+    return undefined;
+  }
+
   private setupRateLimiter(
     tenantId: string,
     connectionId: string,
@@ -593,9 +894,7 @@ export class ApiConnector extends EventEmitter {
     }
 
     // Validate rate limits
-    if (connection.rateLimit.requestsPerSecond <= 0) {
-      throw new Error('Invalid rate limit configuration');
-    }
+    this.assertValidRateLimit(connection.rateLimit);
   }
 
   private isValidAuthConfig(auth: AuthConfig): boolean {
@@ -701,18 +1000,27 @@ export class ApiConnector extends EventEmitter {
 
       for (const conn of connections) {
         const decryptedAuth = await this.decryptAuthCredentials(conn.authentication as any);
-        
+
+        const rateLimit = this.normalizeRateLimit(
+          (conn as unknown as { rateLimit?: unknown; rateLimits?: unknown }).rateLimit ??
+            (conn as unknown as { rateLimits?: unknown }).rateLimits
+        );
+        const retryConfig = this.normalizeRetryConfig(
+          (conn as unknown as { retryConfig?: unknown }).retryConfig ??
+            (conn.metadata as Record<string, unknown> | null | undefined)?.retryConfig
+        );
+
         const apiConnection: ApiConnection = {
           id: conn.id,
           name: conn.name,
           type: conn.type,
           baseUrl: conn.baseUrl,
           authentication: decryptedAuth,
-          headers: conn.headers as Record<string, string>,
-          rateLimit: conn.rateLimit as RateLimitConfig,
-          retryConfig: conn.retryConfig as RetryConfig,
+          headers: this.normalizeHeaders(conn.headers),
+          rateLimit,
+          retryConfig,
           isActive: conn.isActive,
-          metadata: conn.metadata
+          metadata: this.prepareMetadata(conn.metadata)
         };
 
         const cacheKey = this.getCacheKey(conn.tenantId, conn.id);

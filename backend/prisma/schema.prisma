@@ -690,7 +690,8 @@ model ApiConnection {
   headers        Json?    // Default headers
   metadata       Json?    // Additional connection metadata
   isActive       Boolean  @default(true)
-  rateLimits     Json?    // Rate limiting configuration
+  rateLimit      Json?    // Rate limiting configuration
+  retryConfig    Json?    // Retry configuration
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   lastUsed       DateTime?
