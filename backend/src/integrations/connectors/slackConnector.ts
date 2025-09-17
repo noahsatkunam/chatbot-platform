@@ -1,3 +1,5 @@
+import FormData from 'form-data';
+
 import { ApiConnector, ApiRequest, ApiResponse } from '../apiConnector';
 
 export interface SlackMessage {
@@ -120,19 +122,27 @@ export class SlackConnector {
     initialComment?: string
   ): Promise<ApiResponse> {
     const formData = new FormData();
-    formData.append('file', new Blob([file]), filename);
+    formData.append('file', file, { filename });
     formData.append('channels', channels.join(','));
-    
+
     if (title) formData.append('title', title);
     if (initialComment) formData.append('initial_comment', initialComment);
+
+    const rawHeaders = formData.getHeaders();
+    const headers = Object.entries(rawHeaders).reduce<Record<string, string>>(
+      (acc, [key, value]) => {
+        const normalizedKey = key.toLowerCase() === 'content-type' ? 'Content-Type' : key;
+        acc[normalizedKey] = String(value);
+        return acc;
+      },
+      {}
+    );
 
     const request: ApiRequest = {
       method: 'POST',
       endpoint: '/api/files.upload',
       data: formData,
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
+      headers
     };
 
     return await this.apiConnector.makeRequest(connectionId, request, tenantId);
