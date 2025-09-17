@@ -274,19 +274,41 @@ export class CalendarConnector {
     };
   }
 
-  // Create Google Calendar connection configuration
-  static createConnectionConfig(accessToken: string, refreshToken?: string): any {
+  // Create Google Calendar connection configuration with encrypted OAuth2 tokens
+  static createConnectionConfig(accessToken: string, refreshToken?: string, encryptionKey?: string): any {
+    // Import encryption utilities
+    const { encryptPayload } = require('../../utils/encryption');
+    
+    let credentials: any = {
+      accessToken,
+      refreshToken,
+      tokenType: 'Bearer'
+    };
+
+    // Encrypt OAuth2 tokens if encryption key is provided
+    if (encryptionKey) {
+      try {
+        credentials = {
+          accessToken: encryptPayload(accessToken, encryptionKey),
+          refreshToken: refreshToken ? encryptPayload(refreshToken, encryptionKey) : undefined,
+          tokenType: 'Bearer',
+          encrypted: true
+        };
+      } catch (error) {
+        console.warn('Failed to encrypt OAuth2 tokens for Calendar connector:', error);
+        // Fall back to unencrypted (should be avoided in production)
+      }
+    } else {
+      console.warn('Calendar connector: No encryption key provided. OAuth2 tokens will be stored unencrypted.');
+    }
+
     return {
       name: 'Google Calendar Integration',
       type: 'google_calendar',
       baseUrl: 'https://www.googleapis.com',
       authentication: {
         type: 'oauth2',
-        credentials: {
-          accessToken,
-          refreshToken,
-          tokenType: 'Bearer'
-        }
+        credentials
       },
       headers: {
         'Content-Type': 'application/json'

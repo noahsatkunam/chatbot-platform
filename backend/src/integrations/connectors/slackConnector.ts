@@ -148,17 +148,37 @@ export class SlackConnector {
     return await this.apiConnector.makeRequest(connectionId, request, tenantId);
   }
 
-  // Create Slack connection configuration
-  static createConnectionConfig(botToken: string): any {
+  // Create Slack connection configuration with encrypted tokens
+  static createConnectionConfig(botToken: string, encryptionKey?: string): any {
+    // Import encryption utilities
+    const { encryptPayload } = require('../../utils/encryption');
+    
+    let credentials: any = {
+      token: botToken
+    };
+
+    // Encrypt bot token if encryption key is provided
+    if (encryptionKey) {
+      try {
+        credentials = {
+          token: encryptPayload(botToken, encryptionKey),
+          encrypted: true
+        };
+      } catch (error) {
+        console.warn('Failed to encrypt bot token for Slack connector:', error);
+        // Fall back to unencrypted (should be avoided in production)
+      }
+    } else {
+      console.warn('Slack connector: No encryption key provided. Bot token will be stored unencrypted.');
+    }
+
     return {
       name: 'Slack Integration',
       type: 'slack',
       baseUrl: 'https://slack.com',
       authentication: {
         type: 'bearer',
-        credentials: {
-          token: botToken
-        }
+        credentials
       },
       headers: {
         'Content-Type': 'application/json'
