@@ -2,6 +2,13 @@ import { PrismaClient } from '@prisma/client';
 import { EventEmitter } from 'events';
 import axios from 'axios';
 import crypto from 'crypto';
+import {
+  decryptPayload,
+  encryptPayload,
+  ensureEncryptionKey,
+  EncryptedPayload,
+  isEncryptedPayload
+} from '../utils/encryption';
 
 export interface OAuth2Provider {
   id: string;
@@ -40,10 +47,24 @@ export class OAuth2Manager extends EventEmitter {
   private prisma: PrismaClient;
   private providers: Map<string, OAuth2Provider> = new Map();
   private pendingAuthorizations: Map<string, any> = new Map();
+  private readonly encryptionKey: string | null;
 
-  constructor() {
+  constructor(prismaClient?: PrismaClient) {
     super();
-    this.prisma = new PrismaClient();
+    this.prisma = prismaClient ?? new PrismaClient();
+    const configuredKey =
+      process.env.OAUTH2_ENCRYPTION_KEY ||
+      process.env.API_CONNECTOR_ENCRYPTION_KEY ||
+      process.env.ENCRYPTION_KEY ||
+      '';
+    const trimmedKey = configuredKey.trim();
+    this.encryptionKey = trimmedKey.length > 0 ? trimmedKey : null;
+
+    if (!this.encryptionKey) {
+      console.warn(
+        'OAuth2Manager encryption key is not configured. Provider registration and connection persistence will be blocked until a key is provided.'
+      );
+    }
     this.loadProviders();
   }
 
@@ -53,8 +74,11 @@ export class OAuth2Manager extends EventEmitter {
     providerData: Omit<OAuth2Provider, 'id'>
   ): Promise<string> {
     try {
+      const encryptionKey = this.requireEncryptionKey('OAuth2Manager.registerProvider');
       // Encrypt client secret
-      const encryptedSecret = await this.encryptSecret(providerData.clientSecret);
+      const encryptedSecret = this.serializeEncryptedPayload(
+        this.encryptSecret(providerData.clientSecret, encryptionKey)
+      );
 
       const provider = await this.prisma.oAuth2Provider.create({
         data: {
@@ -220,7 +244,16 @@ export class OAuth2Manager extends EventEmitter {
       include: { provider: true }
     });
 
-    if (!connection || !connection.refreshToken) {
+    if (!connection) {
+      throw new Error('Connection not found or no refresh token available');
+    }
+
+    const storedRefreshToken = this.decryptConnectionToken(
+      connection.refreshToken,
+      'OAuth2Manager.refreshToken.refreshToken'
+    );
+
+    if (!storedRefreshToken) {
       throw new Error('Connection not found or no refresh token available');
     }
 
@@ -232,7 +265,7 @@ export class OAuth2Manager extends EventEmitter {
     try {
       const response = await axios.post(provider.tokenUrl, {
         grant_type: 'refresh_token',
-        refresh_token: connection.refreshToken,
+        refresh_token: storedRefreshToken,
         client_id: provider.clientId,
         client_secret: provider.clientSecret
       }, {
@@ -244,19 +277,27 @@ export class OAuth2Manager extends EventEmitter {
       const tokenData = response.data;
       const newTokens: OAuth2Token = {
         accessToken: tokenData.access_token,
-        refreshToken: tokenData.refresh_token || connection.refreshToken,
+        refreshToken: tokenData.refresh_token || storedRefreshToken,
         tokenType: tokenData.token_type || 'Bearer',
         expiresIn: tokenData.expires_in || 3600,
         expiresAt: new Date(Date.now() + (tokenData.expires_in || 3600) * 1000),
         scope: tokenData.scope || connection.scope
       };
 
+      const encryptionKey = this.requireEncryptionKey('OAuth2Manager.refreshToken.persist');
+      const encryptedAccessToken = this.serializeEncryptedPayload(
+        this.encryptToken(newTokens.accessToken, encryptionKey)
+      );
+      const encryptedRefreshToken = newTokens.refreshToken
+        ? this.serializeEncryptedPayload(this.encryptToken(newTokens.refreshToken, encryptionKey))
+        : null;
+
       // Update connection with new tokens
       await this.prisma.oAuth2Connection.update({
         where: { id: connectionId },
         data: {
-          accessToken: newTokens.accessToken,
-          refreshToken: newTokens.refreshToken,
+          accessToken: encryptedAccessToken,
+          refreshToken: encryptedRefreshToken ?? undefined,
           expiresAt: newTokens.expiresAt,
           scope: newTokens.scope,
           updatedAt: new Date()
@@ -297,11 +338,15 @@ export class OAuth2Manager extends EventEmitter {
     }
 
     const provider = await this.getProvider(connection.providerId, tenantId);
-    
+    const decryptedAccessToken = this.decryptConnectionToken(
+      connection.accessToken,
+      'OAuth2Manager.revokeConnection.accessToken'
+    );
+
     try {
       // Revoke token with provider if supported
-      if (provider && this.supportsTokenRevocation(provider.name)) {
-        await this.revokeTokenWithProvider(provider, connection.accessToken);
+      if (provider && decryptedAccessToken && this.supportsTokenRevocation(provider.name)) {
+        await this.revokeTokenWithProvider(provider, decryptedAccessToken);
       }
 
       // Delete connection from database
@@ -329,24 +374,48 @@ export class OAuth2Manager extends EventEmitter {
       orderBy: { createdAt: 'desc' }
     });
 
-    return connections.map(conn => ({
-      id: conn.id,
-      userId: conn.userId,
-      tenantId: conn.tenantId,
-      providerId: conn.providerId,
-      tokens: {
-        accessToken: conn.accessToken,
-        refreshToken: conn.refreshToken,
-        tokenType: conn.tokenType,
-        expiresIn: 0, // Calculate from expiresAt
-        expiresAt: conn.expiresAt,
-        scope: conn.scope
-      },
-      userInfo: conn.userInfo as any,
-      isActive: conn.isActive,
-      createdAt: conn.createdAt,
-      updatedAt: conn.updatedAt
-    }));
+    const decryptedConnections: OAuth2Connection[] = [];
+
+    for (const conn of connections) {
+      const accessToken = this.decryptConnectionToken(
+        conn.accessToken,
+        `OAuth2Manager.getUserConnections.${conn.id}.accessToken`
+      );
+
+      if (!accessToken) {
+        console.error('Failed to decrypt OAuth2 access token', {
+          connectionId: conn.id,
+          tenantId: conn.tenantId
+        });
+        continue;
+      }
+
+      const refreshToken = this.decryptConnectionToken(
+        conn.refreshToken,
+        `OAuth2Manager.getUserConnections.${conn.id}.refreshToken`
+      );
+
+      decryptedConnections.push({
+        id: conn.id,
+        userId: conn.userId,
+        tenantId: conn.tenantId,
+        providerId: conn.providerId,
+        tokens: {
+          accessToken,
+          refreshToken: refreshToken ?? undefined,
+          tokenType: conn.tokenType,
+          expiresIn: 0, // Calculate from expiresAt
+          expiresAt: conn.expiresAt,
+          scope: conn.scope
+        },
+        userInfo: conn.userInfo as any,
+        isActive: conn.isActive,
+        createdAt: conn.createdAt,
+        updatedAt: conn.updatedAt
+      });
+    }
+
+    return decryptedConnections;
   }
 
   // Check if token is expired
@@ -388,7 +457,16 @@ export class OAuth2Manager extends EventEmitter {
     }
 
     // Decrypt client secret
-    const decryptedSecret = await this.decryptSecret(provider.clientSecret);
+    let decryptedSecret: string;
+    try {
+      decryptedSecret = this.decryptClientSecret(provider.clientSecret);
+    } catch (error) {
+      console.error('Failed to decrypt OAuth2 provider client secret', {
+        providerId: provider.id,
+        tenantId
+      });
+      throw error;
+    }
 
     const oauth2Provider: OAuth2Provider = {
       id: provider.id,
@@ -489,13 +567,21 @@ export class OAuth2Manager extends EventEmitter {
     tokens: OAuth2Token,
     userInfo: any
   ): Promise<OAuth2Connection> {
+    const encryptionKey = this.requireEncryptionKey('OAuth2Manager.saveConnection');
+    const encryptedAccessToken = this.serializeEncryptedPayload(
+      this.encryptToken(tokens.accessToken, encryptionKey)
+    );
+    const encryptedRefreshToken = tokens.refreshToken
+      ? this.serializeEncryptedPayload(this.encryptToken(tokens.refreshToken, encryptionKey))
+      : null;
+
     const connection = await this.prisma.oAuth2Connection.create({
       data: {
         userId,
         tenantId,
         providerId,
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
+        accessToken: encryptedAccessToken,
+        refreshToken: encryptedRefreshToken ?? undefined,
         tokenType: tokens.tokenType,
         expiresAt: tokens.expiresAt,
         scope: tokens.scope,
@@ -551,14 +637,98 @@ export class OAuth2Manager extends EventEmitter {
     }
   }
 
-  private async encryptSecret(secret: string): Promise<string> {
-    // Mock encryption - replace with actual encryption service
-    return Buffer.from(secret).toString('base64');
+  private requireEncryptionKey(context: string): string {
+    return ensureEncryptionKey(this.encryptionKey, context);
   }
 
-  private async decryptSecret(encryptedSecret: string): Promise<string> {
-    // Mock decryption - replace with actual decryption service
-    return Buffer.from(encryptedSecret, 'base64').toString();
+  private serializeEncryptedPayload(payload: EncryptedPayload): string {
+    return JSON.stringify(payload);
+  }
+
+  private parseEncryptedPayload(value: unknown): EncryptedPayload | null {
+    if (!value) {
+      return null;
+    }
+
+    if (isEncryptedPayload(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (isEncryptedPayload(parsed)) {
+          return parsed;
+        }
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  private encryptSecret(secret: string, encryptionKey: string): EncryptedPayload {
+    return encryptPayload(secret, encryptionKey);
+  }
+
+  private encryptToken(token: string, encryptionKey: string): EncryptedPayload {
+    return encryptPayload(token, encryptionKey);
+  }
+
+  private decryptClientSecret(storedSecret: unknown): string {
+    const encryptedPayload = this.parseEncryptedPayload(storedSecret);
+
+    if (encryptedPayload) {
+      const encryptionKey = this.requireEncryptionKey('OAuth2Manager.decryptClientSecret');
+      return decryptPayload<string>(encryptedPayload, encryptionKey);
+    }
+
+    if (typeof storedSecret === 'string') {
+      const trimmed = storedSecret.trim();
+      if (!trimmed) {
+        throw new Error('Stored client secret is empty');
+      }
+
+      try {
+        const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
+        if (
+          decoded &&
+          Buffer.from(decoded, 'utf8').toString('base64').replace(/=+$/, '') === trimmed.replace(/=+$/, '')
+        ) {
+          return decoded;
+        }
+      } catch {
+        // Not base64 - fall through to return trimmed string
+      }
+
+      return trimmed;
+    }
+
+    throw new Error('Unsupported client secret format');
+  }
+
+  private decryptConnectionToken(storedToken: unknown, context: string): string | null {
+    if (!storedToken) {
+      return null;
+    }
+
+    const encryptedPayload = this.parseEncryptedPayload(storedToken);
+    if (encryptedPayload) {
+      const encryptionKey = this.requireEncryptionKey(context);
+      return decryptPayload<string>(encryptedPayload, encryptionKey);
+    }
+
+    if (typeof storedToken === 'string') {
+      return storedToken;
+    }
+
+    return null;
   }
 
   private async loadProviders(): Promise<void> {
@@ -568,19 +738,27 @@ export class OAuth2Manager extends EventEmitter {
       });
 
       for (const provider of providers) {
-        const decryptedSecret = await this.decryptSecret(provider.clientSecret);
-        
-        this.providers.set(provider.id, {
-          id: provider.id,
-          name: provider.name,
-          authUrl: provider.authUrl,
-          tokenUrl: provider.tokenUrl,
-          clientId: provider.clientId,
-          clientSecret: decryptedSecret,
-          scopes: provider.scopes,
-          redirectUri: provider.redirectUri,
-          isActive: provider.isActive
-        });
+        try {
+          const decryptedSecret = this.decryptClientSecret(provider.clientSecret);
+
+          this.providers.set(provider.id, {
+            id: provider.id,
+            name: provider.name,
+            authUrl: provider.authUrl,
+            tokenUrl: provider.tokenUrl,
+            clientId: provider.clientId,
+            clientSecret: decryptedSecret,
+            scopes: provider.scopes,
+            redirectUri: provider.redirectUri,
+            isActive: provider.isActive
+          });
+        } catch (error) {
+          console.error('Failed to cache OAuth2 provider', {
+            providerId: provider.id,
+            tenantId: provider.tenantId,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
       }
     } catch (error) {
       console.error('Error loading OAuth2 providers:', error);
