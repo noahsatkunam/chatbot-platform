@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Role } from '@prisma/client';
 import { EventEmitter } from 'events';
 import { WorkflowService } from '../workflows/workflowService';
 import { ContextManager } from './contextManager';
@@ -30,6 +30,13 @@ export interface ExecutionPermissions {
   reason?: string;
   requiresApproval?: boolean;
   approvalRequired?: string[];
+}
+
+interface RolePermissionConfig {
+  canExecute: boolean;
+  canCancel: boolean;
+  canView: boolean;
+  enforceTenantScope: boolean;
 }
 
 export class WorkflowExecutor extends EventEmitter {
@@ -159,7 +166,7 @@ export class WorkflowExecutor extends EventEmitter {
       // Check user permissions
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { role: true }
+        select: { role: true, tenantId: true, isActive: true }
       });
 
       if (!user) {
@@ -169,27 +176,29 @@ export class WorkflowExecutor extends EventEmitter {
         };
       }
 
-      // Check workflow-specific permissions
-      const workflowPermissions = await this.prisma.workflowPermission.findFirst({
-        where: {
-          workflowId,
-          userId
-        }
-      });
-
-      // If no specific permissions, check role-based permissions
-      if (!workflowPermissions) {
-        const rolePermissions = await this.getRolePermissions(user.role, tenantId);
-        if (!rolePermissions.canExecute) {
-          return {
-            canExecute: false,
-            reason: 'Insufficient permissions to execute workflows'
-          };
-        }
-      } else if (!workflowPermissions.canExecute) {
+      if (!user.isActive) {
         return {
           canExecute: false,
-          reason: 'No execute permission for this workflow'
+          reason: 'User account is disabled'
+        };
+      }
+
+      const rolePermissions = this.getRolePermissions(user.role);
+
+      if (rolePermissions.enforceTenantScope && user.tenantId !== tenantId) {
+        return {
+          canExecute: false,
+          reason: 'User does not belong to this tenant'
+        };
+      }
+
+      const isWorkflowCreator = workflow.createdBy === userId;
+      const canExecuteByRole = rolePermissions.canExecute || user.role === Role.SUPER_ADMIN;
+
+      if (!isWorkflowCreator && !canExecuteByRole) {
+        return {
+          canExecute: false,
+          reason: 'Insufficient permissions to execute workflows'
         };
       }
 
@@ -499,16 +508,36 @@ export class WorkflowExecutor extends EventEmitter {
   }
 
   // Helper methods
-  private async getRolePermissions(role: string, tenantId: string): Promise<any> {
+  private getRolePermissions(role: Role): RolePermissionConfig {
     // Default role permissions - in production, this would come from database
-    const defaultPermissions = {
-      admin: { canExecute: true, canCancel: true, canView: true },
-      editor: { canExecute: true, canCancel: false, canView: true },
-      viewer: { canExecute: false, canCancel: false, canView: true },
-      user: { canExecute: false, canCancel: false, canView: false }
+    const defaultPermissions: Record<Role, RolePermissionConfig> = {
+      [Role.SUPER_ADMIN]: {
+        canExecute: true,
+        canCancel: true,
+        canView: true,
+        enforceTenantScope: false
+      },
+      [Role.TENANT_ADMIN]: {
+        canExecute: true,
+        canCancel: true,
+        canView: true,
+        enforceTenantScope: true
+      },
+      [Role.TENANT_USER]: {
+        canExecute: true,
+        canCancel: false,
+        canView: true,
+        enforceTenantScope: true
+      },
+      [Role.END_USER]: {
+        canExecute: false,
+        canCancel: false,
+        canView: false,
+        enforceTenantScope: true
+      }
     };
 
-    return defaultPermissions[role as keyof typeof defaultPermissions] || defaultPermissions.user;
+    return defaultPermissions[role] || defaultPermissions[Role.END_USER];
   }
 
   private async checkExecutionLimits(userId: string, tenantId: string): Promise<any> {
@@ -547,14 +576,17 @@ export class WorkflowExecutor extends EventEmitter {
     return { allowed: true };
   }
 
-  private async checkApprovalRequirement(workflow: any, userRole: string): Promise<any> {
+  private async checkApprovalRequirement(workflow: any, userRole: Role): Promise<any> {
     // Check if workflow requires approval based on risk level or user role
-    const requiresApproval = workflow.riskLevel === 'high' && userRole !== 'admin';
-    
+    const requiresApproval =
+      workflow.riskLevel === 'high' &&
+      userRole !== Role.SUPER_ADMIN &&
+      userRole !== Role.TENANT_ADMIN;
+
     if (requiresApproval) {
       return {
         required: true,
-        approvers: ['admin'] // In production, this would be more sophisticated
+        approvers: [Role.TENANT_ADMIN, Role.SUPER_ADMIN] // In production, this would be more sophisticated
       };
     }
 
