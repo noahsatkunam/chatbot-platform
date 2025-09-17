@@ -170,15 +170,32 @@ export class WorkflowExecutor extends EventEmitter {
       }
 
       // Check workflow-specific permissions
-      const workflowPermissions = await this.prisma.workflowPermission.findFirst({
+      let workflowPermission = await this.prisma.workflowPermission.findFirst({
         where: {
           workflowId,
+          tenantId,
           userId
         }
       });
 
-      // If no specific permissions, check role-based permissions
-      if (!workflowPermissions) {
+      if (!workflowPermission) {
+        workflowPermission = await this.prisma.workflowPermission.findFirst({
+          where: {
+            workflowId,
+            tenantId,
+            role: user.role
+          }
+        });
+      }
+
+      if (workflowPermission) {
+        if (!workflowPermission.canExecute) {
+          return {
+            canExecute: false,
+            reason: 'No execute permission for this workflow'
+          };
+        }
+      } else {
         const rolePermissions = await this.getRolePermissions(user.role, tenantId);
         if (!rolePermissions.canExecute) {
           return {
@@ -186,11 +203,6 @@ export class WorkflowExecutor extends EventEmitter {
             reason: 'Insufficient permissions to execute workflows'
           };
         }
-      } else if (!workflowPermissions.canExecute) {
-        return {
-          canExecute: false,
-          reason: 'No execute permission for this workflow'
-        };
       }
 
       // Check execution limits
@@ -323,13 +335,21 @@ export class WorkflowExecutor extends EventEmitter {
     chatContext: ChatTriggerContext
   ): Promise<ExecutionResult> {
     try {
-      const pendingRequest = await this.getPendingConfirmation(confirmationId);
+      const pendingRequest = await this.getPendingConfirmation(
+        confirmationId,
+        chatContext.tenantId,
+        chatContext.userId
+      );
       if (!pendingRequest) {
         throw new Error('Confirmation request not found or expired');
       }
 
       // Remove pending confirmation
-      await this.removePendingConfirmation(confirmationId);
+      await this.removePendingConfirmation(
+        confirmationId,
+        chatContext.tenantId,
+        chatContext.userId
+      );
 
       if (!confirmed) {
         const cancelledResult: ExecutionResult = {
@@ -665,9 +685,17 @@ export class WorkflowExecutor extends EventEmitter {
     });
   }
 
-  private async getPendingConfirmation(confirmationId: string): Promise<ExecutionRequest | null> {
-    const confirmation = await this.prisma.workflowConfirmation.findUnique({
-      where: { id: confirmationId }
+  private async getPendingConfirmation(
+    confirmationId: string,
+    tenantId: string,
+    userId: string
+  ): Promise<ExecutionRequest | null> {
+    const confirmation = await this.prisma.workflowConfirmation.findFirst({
+      where: {
+        id: confirmationId,
+        tenantId,
+        userId
+      }
     });
 
     if (!confirmation || confirmation.expiresAt < new Date()) {
@@ -677,9 +705,17 @@ export class WorkflowExecutor extends EventEmitter {
     return confirmation.requestData as any;
   }
 
-  private async removePendingConfirmation(confirmationId: string): Promise<void> {
-    await this.prisma.workflowConfirmation.delete({
-      where: { id: confirmationId }
+  private async removePendingConfirmation(
+    confirmationId: string,
+    tenantId: string,
+    userId: string
+  ): Promise<void> {
+    await this.prisma.workflowConfirmation.deleteMany({
+      where: {
+        id: confirmationId,
+        tenantId,
+        userId
+      }
     }).catch(() => {
       // Ignore errors if already deleted
     });
