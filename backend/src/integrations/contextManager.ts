@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 
 export interface ConversationContext {
   conversationId: string;
+  tenantId: string;
   participants: string[];
   messageHistory: MessageContext[];
   metadata: any;
@@ -48,6 +49,8 @@ export interface InputRequest {
   id: string;
   workflowId: string;
   executionId: string;
+  tenantId?: string;
+  conversationId?: string;
   stepId: string;
   type: 'text' | 'number' | 'date' | 'file' | 'choice' | 'confirmation';
   prompt: string;
@@ -63,8 +66,9 @@ export interface ApprovalRequest {
   id: string;
   workflowId: string;
   executionId: string;
+  tenantId?: string;
   title: string;
-  description: string;
+  description?: string;
   approvers: string[];
   requiredApprovals: number;
   currentApprovals: string[];
@@ -241,13 +245,25 @@ export class ContextManager extends EventEmitter {
     executionId: string,
     inputRequest: Omit<InputRequest, 'id' | 'createdAt' | 'expiresAt'>
   ): Promise<string> {
+    const execution = await this.prisma.workflowExecution.findUnique({
+      where: { id: executionId },
+      select: { tenantId: true }
+    });
+
+    if (!execution) {
+      throw new Error(`Workflow execution not found: ${executionId}`);
+    }
+
+    const tenantId = inputRequest.tenantId ?? execution.tenantId;
+
     const request: InputRequest = {
       ...inputRequest,
       id: `input_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       workflowId,
       executionId,
+      tenantId,
       createdAt: new Date(),
-      expiresAt: inputRequest.timeout 
+      expiresAt: inputRequest.timeout
         ? new Date(Date.now() + inputRequest.timeout * 1000)
         : undefined
     };
@@ -265,6 +281,8 @@ export class ContextManager extends EventEmitter {
         id: request.id,
         workflowId,
         executionId,
+        tenantId,
+        conversationId: request.conversationId,
         stepId: request.stepId,
         type: request.type,
         prompt: request.prompt,
@@ -358,11 +376,23 @@ export class ContextManager extends EventEmitter {
     executionId: string,
     approvalRequest: Omit<ApprovalRequest, 'id' | 'createdAt' | 'currentApprovals'>
   ): Promise<string> {
+    const execution = await this.prisma.workflowExecution.findUnique({
+      where: { id: executionId },
+      select: { tenantId: true }
+    });
+
+    if (!execution) {
+      throw new Error(`Workflow execution not found: ${executionId}`);
+    }
+
+    const tenantId = approvalRequest.tenantId ?? execution.tenantId;
+
     const request: ApprovalRequest = {
       ...approvalRequest,
       id: `approval_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       workflowId,
       executionId,
+      tenantId,
       currentApprovals: [],
       createdAt: new Date()
     };
@@ -379,6 +409,7 @@ export class ContextManager extends EventEmitter {
         id: request.id,
         workflowId,
         executionId,
+        tenantId,
         title: request.title,
         description: request.description,
         approvers: request.approvers,
@@ -547,10 +578,12 @@ export class ContextManager extends EventEmitter {
       id: r.id,
       workflowId: r.workflowId,
       executionId: r.executionId,
+      tenantId: r.tenantId,
+      conversationId: r.conversationId || undefined,
       stepId: r.stepId,
       type: r.type as any,
       prompt: r.prompt,
-      options: r.options,
+      options: r.options || undefined,
       validation: r.validation as any,
       required: r.required,
       timeout: r.timeout,
@@ -585,6 +618,7 @@ export class ContextManager extends EventEmitter {
         id: r.id,
         workflowId: r.workflowId,
         executionId: r.executionId,
+        tenantId: r.tenantId,
         title: r.title,
         description: r.description,
         approvers: r.approvers,
@@ -598,42 +632,43 @@ export class ContextManager extends EventEmitter {
 
   // Private helper methods
   private async loadConversationContext(conversationId: string): Promise<ConversationContext> {
-    // Load from database
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
-      include: {
-        participants: true,
-        messages: {
-          orderBy: { createdAt: 'desc' },
-          take: 50
+    const [conversation, contextData] = await Promise.all([
+      this.prisma.conversation.findUnique({
+        where: { id: conversationId },
+        include: {
+          participants: true,
+          messages: {
+            orderBy: { createdAt: 'desc' },
+            take: 50
+          }
         }
-      }
-    });
+      }),
+      this.prisma.conversationContext.findMany({
+        where: { conversationId }
+      })
+    ]);
 
-    if (!conversation) {
-      // Create new context
-      return {
-        conversationId,
-        participants: [],
-        messageHistory: [],
-        metadata: {},
-        variables: new Map(),
-        lastActivity: new Date()
-      };
-    }
-
-    // Load variables from database
-    const variables = new Map();
-    const contextData = await this.prisma.conversationContext.findMany({
-      where: { conversationId }
-    });
-
+    const variables = new Map<string, any>();
     contextData.forEach(ctx => {
       variables.set(ctx.key, ctx.value);
     });
 
+    if (!conversation) {
+      const tenantId = contextData[0]?.tenantId ?? '';
+      return {
+        conversationId,
+        tenantId,
+        participants: [],
+        messageHistory: [],
+        metadata: {},
+        variables,
+        lastActivity: new Date()
+      };
+    }
+
     return {
       conversationId,
+      tenantId: conversation.tenantId,
       participants: conversation.participants.map(p => p.userId),
       messageHistory: conversation.messages.reverse().map(m => ({
         messageId: m.id,
@@ -643,7 +678,7 @@ export class ContextManager extends EventEmitter {
         messageType: m.type as any,
         metadata: m.metadata as any
       })),
-      metadata: conversation.metadata as any || {},
+      metadata: (conversation.metadata as any) || {},
       variables,
       lastActivity: new Date()
     };
@@ -652,9 +687,15 @@ export class ContextManager extends EventEmitter {
   private async loadUserContext(userId: string, tenantId: string): Promise<UserContext> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      include: {
-        profile: true,
-        preferences: true
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        fullName: true,
+        avatar: true,
+        avatarUrl: true,
+        role: true
       }
     });
 
@@ -663,7 +704,7 @@ export class ContextManager extends EventEmitter {
     }
 
     // Load user variables
-    const variables = new Map();
+    const variables = new Map<string, any>();
     const contextData = await this.prisma.userContext.findMany({
       where: { userId, tenantId }
     });
@@ -682,11 +723,21 @@ export class ContextManager extends EventEmitter {
       select: { workflowId: true }
     });
 
+    const profile = {
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      fullName:
+        user.fullName || [user.firstName, user.lastName].filter(Boolean).join(' ') || undefined,
+      avatar: user.avatarUrl || user.avatar || undefined,
+      role: user.role
+    };
+
     return {
       userId,
       tenantId,
-      profile: user.profile as any || {},
-      preferences: user.preferences as any || {},
+      profile,
+      preferences: {},
       permissions: {}, // Load from role/permissions system
       activeWorkflows: activeWorkflows.map(w => w.workflowId),
       variables,
@@ -726,10 +777,12 @@ export class ContextManager extends EventEmitter {
         id: i.id,
         workflowId: i.workflowId,
         executionId: i.executionId,
+        tenantId: i.tenantId,
+        conversationId: i.conversationId || undefined,
         stepId: i.stepId,
         type: i.type as any,
         prompt: i.prompt,
-        options: i.options,
+        options: i.options || undefined,
         validation: i.validation as any,
         required: i.required,
         timeout: i.timeout,
@@ -751,6 +804,7 @@ export class ContextManager extends EventEmitter {
         id: a.id,
         workflowId: a.workflowId,
         executionId: a.executionId,
+        tenantId: a.tenantId,
         title: a.title,
         description: a.description,
         approvers: a.approvers,
@@ -774,34 +828,52 @@ export class ContextManager extends EventEmitter {
   }
 
   private async persistConversationContext(context: ConversationContext): Promise<void> {
-    // Update conversation metadata
-    await this.prisma.conversation.update({
+    const conversation = await this.prisma.conversation.findUnique({
       where: { id: context.conversationId },
-      data: {
-        metadata: context.metadata,
-        updatedAt: new Date()
-      }
-    }).catch(() => {
-      // Ignore if conversation doesn't exist yet
+      select: { tenantId: true }
     });
 
-    // Update variables
-    for (const [key, value] of context.variables) {
-      await this.prisma.conversationContext.upsert({
+    if (!conversation?.tenantId) {
+      return;
+    }
+
+    context.tenantId = conversation.tenantId;
+
+    // Update conversation metadata
+    await this.prisma.conversation
+      .update({
+        where: { id: context.conversationId },
+        data: {
+          metadata: context.metadata,
+          updatedAt: new Date()
+        }
+      })
+      .catch(() => {
+        // Ignore if conversation doesn't exist yet
+      });
+
+    const operations = Array.from(context.variables.entries()).map(([key, value]) =>
+      this.prisma.conversationContext.upsert({
         where: {
           conversationId_key: {
             conversationId: context.conversationId,
             key
           }
         },
-        update: { value },
+        update: {
+          value,
+          tenantId: context.tenantId
+        },
         create: {
           conversationId: context.conversationId,
+          tenantId: context.tenantId,
           key,
           value
         }
-      });
-    }
+      })
+    );
+
+    await Promise.all(operations);
   }
 
   private async persistUserContext(context: UserContext): Promise<void> {
@@ -815,7 +887,10 @@ export class ContextManager extends EventEmitter {
             key
           }
         },
-        update: { value },
+        update: {
+          value,
+          tenantId: context.tenantId
+        },
         create: {
           userId: context.userId,
           tenantId: context.tenantId,
