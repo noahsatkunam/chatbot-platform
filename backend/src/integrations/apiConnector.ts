@@ -61,9 +61,14 @@ export interface ApiResponse {
   duration: number;
 }
 
+interface CachedApiConnection {
+  tenantId: string;
+  connection: ApiConnection;
+}
+
 export class ApiConnector extends EventEmitter {
   private prisma: PrismaClient;
-  private connections: Map<string, ApiConnection> = new Map();
+  private connections: Map<string, CachedApiConnection> = new Map();
   private clients: Map<string, AxiosInstance> = new Map();
   private rateLimiters: Map<string, RateLimiter> = new Map();
   private readonly encryptionKey: string | null;
@@ -81,6 +86,10 @@ export class ApiConnector extends EventEmitter {
       );
     }
     this.loadConnections();
+  }
+
+  private getCacheKey(tenantId: string, connectionId: string): string {
+    return `${tenantId}:${connectionId}`;
   }
 
   // Create new API connection
@@ -128,13 +137,17 @@ export class ApiConnector extends EventEmitter {
         metadata: connection.metadata
       };
 
-      this.connections.set(connection.id, apiConnection);
+      const cacheKey = this.getCacheKey(tenantId, connection.id);
+      this.connections.set(cacheKey, {
+        tenantId,
+        connection: apiConnection
+      });
 
       // Create HTTP client
-      await this.createHttpClient(connection.id, apiConnection);
+      await this.createHttpClient(tenantId, connection.id, apiConnection);
 
       // Setup rate limiter
-      this.setupRateLimiter(connection.id, apiConnection.rateLimit);
+      this.setupRateLimiter(tenantId, connection.id, apiConnection.rateLimit);
 
       this.emit('connection:created', {
         connectionId: connection.id,
@@ -191,22 +204,23 @@ export class ApiConnector extends EventEmitter {
     });
 
     // Update cache
-    const cachedConnection = this.connections.get(connectionId);
+    const cacheKey = this.getCacheKey(tenantId, connectionId);
+    const cachedConnection = this.connections.get(cacheKey);
     if (cachedConnection) {
-      Object.assign(cachedConnection, updates);
+      Object.assign(cachedConnection.connection, updates);
 
       if (decryptedAuthForCache) {
-        cachedConnection.authentication = decryptedAuthForCache;
+        cachedConnection.connection.authentication = decryptedAuthForCache;
       }
 
       // Recreate HTTP client if needed
       if (updates.baseUrl || updates.authentication || updates.headers) {
-        await this.createHttpClient(connectionId, cachedConnection);
+        await this.createHttpClient(tenantId, connectionId, cachedConnection.connection);
       }
 
       // Update rate limiter if needed
       if (updates.rateLimit) {
-        this.setupRateLimiter(connectionId, updates.rateLimit);
+        this.setupRateLimiter(tenantId, connectionId, updates.rateLimit);
       }
     }
 
@@ -224,9 +238,10 @@ export class ApiConnector extends EventEmitter {
     });
 
     // Clean up cache
-    this.connections.delete(connectionId);
-    this.clients.delete(connectionId);
-    this.rateLimiters.delete(connectionId);
+    const cacheKey = this.getCacheKey(tenantId, connectionId);
+    this.connections.delete(cacheKey);
+    this.clients.delete(cacheKey);
+    this.rateLimiters.delete(cacheKey);
 
     this.emit('connection:deleted', {
       connectionId,
@@ -249,11 +264,18 @@ export class ApiConnector extends EventEmitter {
         throw new Error('Connection not found or inactive');
       }
 
+      const cacheKey = this.getCacheKey(tenantId, connectionId);
+
+      const cachedEntry = this.connections.get(cacheKey);
+      if (!cachedEntry || cachedEntry.tenantId !== tenantId) {
+        throw new Error('Connection not found for tenant');
+      }
+
       // Check rate limits
-      await this.checkRateLimit(connectionId);
+      await this.checkRateLimit(tenantId, connectionId);
 
       // Get HTTP client
-      const client = this.clients.get(connectionId);
+      const client = this.clients.get(cacheKey);
       if (!client) {
         throw new Error('HTTP client not initialized');
       }
@@ -344,10 +366,16 @@ export class ApiConnector extends EventEmitter {
 
   // Get connection by ID
   async getConnection(connectionId: string, tenantId: string): Promise<ApiConnection | null> {
+    const cacheKey = this.getCacheKey(tenantId, connectionId);
+
     // Check cache first
-    const cached = this.connections.get(connectionId);
+    const cached = this.connections.get(cacheKey);
     if (cached) {
-      return cached;
+      if (cached.tenantId !== tenantId) {
+        console.warn(`Tenant mismatch for cached connection ${connectionId}`);
+        return null;
+      }
+      return cached.connection;
     }
 
     // Load from database
@@ -376,9 +404,12 @@ export class ApiConnector extends EventEmitter {
     };
 
     // Cache and setup
-    this.connections.set(connectionId, apiConnection);
-    await this.createHttpClient(connectionId, apiConnection);
-    this.setupRateLimiter(connectionId, apiConnection.rateLimit);
+    this.connections.set(cacheKey, {
+      tenantId,
+      connection: apiConnection
+    });
+    await this.createHttpClient(tenantId, connectionId, apiConnection);
+    this.setupRateLimiter(tenantId, connectionId, apiConnection.rateLimit);
 
     return apiConnection;
   }
@@ -413,7 +444,11 @@ export class ApiConnector extends EventEmitter {
   }
 
   // Private helper methods
-  private async createHttpClient(connectionId: string, connection: ApiConnection): Promise<void> {
+  private async createHttpClient(
+    tenantId: string,
+    connectionId: string,
+    connection: ApiConnection
+  ): Promise<void> {
     const client = axios.create({
       baseURL: connection.baseUrl,
       headers: connection.headers
@@ -440,7 +475,8 @@ export class ApiConnector extends EventEmitter {
       }
     );
 
-    this.clients.set(connectionId, client);
+    const cacheKey = this.getCacheKey(tenantId, connectionId);
+    this.clients.set(cacheKey, client);
   }
 
   private async addAuthentication(
@@ -492,13 +528,19 @@ export class ApiConnector extends EventEmitter {
     return config;
   }
 
-  private setupRateLimiter(connectionId: string, rateLimit: RateLimitConfig): void {
+  private setupRateLimiter(
+    tenantId: string,
+    connectionId: string,
+    rateLimit: RateLimitConfig
+  ): void {
     const limiter = new RateLimiter(rateLimit);
-    this.rateLimiters.set(connectionId, limiter);
+    const cacheKey = this.getCacheKey(tenantId, connectionId);
+    this.rateLimiters.set(cacheKey, limiter);
   }
 
-  private async checkRateLimit(connectionId: string): Promise<void> {
-    const limiter = this.rateLimiters.get(connectionId);
+  private async checkRateLimit(tenantId: string, connectionId: string): Promise<void> {
+    const cacheKey = this.getCacheKey(tenantId, connectionId);
+    const limiter = this.rateLimiters.get(cacheKey);
     if (limiter) {
       await limiter.checkLimit();
     }
@@ -673,9 +715,13 @@ export class ApiConnector extends EventEmitter {
           metadata: conn.metadata
         };
 
-        this.connections.set(conn.id, apiConnection);
-        await this.createHttpClient(conn.id, apiConnection);
-        this.setupRateLimiter(conn.id, apiConnection.rateLimit);
+        const cacheKey = this.getCacheKey(conn.tenantId, conn.id);
+        this.connections.set(cacheKey, {
+          tenantId: conn.tenantId,
+          connection: apiConnection
+        });
+        await this.createHttpClient(conn.tenantId, conn.id, apiConnection);
+        this.setupRateLimiter(conn.tenantId, conn.id, apiConnection.rateLimit);
       }
     } catch (error) {
       console.error('Error loading API connections:', error);
