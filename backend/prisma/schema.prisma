@@ -971,47 +971,107 @@ model JobQueue {
 // Chat Integration Models
 model ConversationContext {
   id             String   @id @default(cuid())
-  conversationId String   @unique
+  conversationId String
   tenantId       String
-  variables      Json     @default("{}")
-  history        Json     @default("[]")
-  currentStep    String?
-  workflowState  Json?    // Current workflow execution state
-  inputRequests  Json     @default("[]")
-  approvalRequests Json   @default("[]")
-  metadata       Json?    // Additional context metadata
+  key            String
+  value          Json
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, key])
   @@index([conversationId])
   @@index([tenantId])
   @@map("conversation_contexts")
 }
 
-model WorkflowInputRequest {
-  id           String   @id @default(cuid())
-  tenantId     String
-  workflowId   String
-  executionId  String
-  conversationId String?
-  userId       String
-  requestType  String   // "input", "approval", "confirmation"
-  title        String
-  description  String?  @db.Text
-  fields       Json     // Array of input fields
-  status       String   @default("pending") // "pending", "completed", "expired", "cancelled"
-  response     Json?    // User response data
-  expiresAt    DateTime?
-  respondedAt  DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+model UserContext {
+  id        String   @id @default(cuid())
+  userId    String
+  tenantId  String
+  key       String
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId, key])
   @@index([tenantId])
+  @@map("user_contexts")
+}
+
+model WorkflowApprovalRequest {
+  id                 String   @id @default(cuid())
+  workflowId         String
+  executionId        String
+  tenantId           String
+  title              String
+  description        String?  @db.Text
+  approvers          String[]
+  requiredApprovals  Int      @default(1)
+  data               Json?
+  expiresAt          DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  execution WorkflowExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  responses WorkflowApprovalResponse[]
+
   @@index([workflowId])
   @@index([executionId])
-  @@index([conversationId])
+  @@index([tenantId])
+  @@index([expiresAt])
+  @@map("workflow_approval_requests")
+}
+
+model WorkflowApprovalResponse {
+  id                  String   @id @default(cuid())
+  approvalRequestId   String
+  userId              String
+  approved            Boolean
+  comment             String?  @db.Text
+  respondedAt         DateTime @default(now())
+  createdAt           DateTime @default(now())
+
+  approvalRequest WorkflowApprovalRequest @relation(fields: [approvalRequestId], references: [id], onDelete: Cascade)
+  user            User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([approvalRequestId, userId])
   @@index([userId])
-  @@index([status])
+  @@map("workflow_approval_responses")
+}
+
+model WorkflowInputRequest {
+  id             String   @id @default(cuid())
+  workflowId     String
+  executionId    String
+  tenantId       String
+  conversationId String?
+  stepId         String
+  type           String
+  prompt         String
+  options        String[]?
+  validation     Json?
+  required       Boolean  @default(true)
+  timeout        Int?
+  response       Json?
+  respondedBy    String?
+  respondedAt    DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  execution    WorkflowExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  conversation Conversation?     @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  respondent   User?             @relation("WorkflowInputRequestRespondent", fields: [respondedBy], references: [id], onDelete: SetNull)
+
+  @@index([workflowId])
+  @@index([executionId])
+  @@index([tenantId])
+  @@index([conversationId])
+  @@index([respondedBy])
   @@index([expiresAt])
   @@map("workflow_input_requests")
 }
